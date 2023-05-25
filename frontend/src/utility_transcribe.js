@@ -28,7 +28,6 @@ let AudioStreamer = {
   /**
    * @param {object} transcribeConfig Transcription configuration such as language, encoding, etc.
    * @param {function} onData Callback to run on data each time it's received
-   * @param {function} onNewJobStarted call back to show start transcribing accepted
    * @param {function} onError Callback to run on an error if one is emitted.
    */
   initRecording: function (transcribeConfig, onData, onNewJobStarted, onError) {
@@ -61,15 +60,6 @@ let AudioStreamer = {
       socket.on('speechData', (response) => {
         //console.log('speech data received from server!')
         onData(response.data, response.isMove2NextChunk, response.isPhraseComplete, response.isFinal);
-      });
-    }
-
-    console.log('regirstering onNewJobStarted callback ...')
-    if (onNewJobStarted) {
-      console.log('registered onNewJobStarted callback!')
-      socket.on('onNewJobStarted', (response) => {
-        console.log('start new job status received from server!')
-        onNewJobStarted(response.started);
       });
     }
 

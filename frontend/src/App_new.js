@@ -68,14 +68,6 @@ const AppNew = () => {
         // }
     }
 
-    function onNewJobStarted(started) {
-        console.log('new job started: ', started)
-        if (started) {            
-            setTranscribedData([])
-            setIsRecording(true)
-        }
-    }
-
     function getTranscriptionConfig() {
         return {
             audio: {
@@ -88,11 +80,12 @@ const AppNew = () => {
     }
 
     function onStart() {
+        setTranscribedData([])
+        setIsRecording(true)
 
         speechToTextUtils.initRecording(
             getTranscriptionConfig(),
             handleDataReceived,
-            onNewJobStarted,
             (error) => {
                 console.error('Error when transcribing', error);
                 setIsRecording(false)
