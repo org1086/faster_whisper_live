@@ -12,6 +12,7 @@ import numpy as np
 
 import os
 import time
+import threading
 from time import sleep
 from datetime import datetime, timedelta
 from flask import Flask, request
@@ -37,30 +38,43 @@ warnings.filterwarnings("ignore")
 async_mode = 'eventlet'
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode=async_mode)
 
+# min buffer length of interest
+MIN_CHUNK_SIZE = 480                    # in bytes
+
+# audio streaming in progress
+is_streaming = False
+
+#------------------------ringbuffer setups------------------------------------
 SLOT_SAMPLES = 2048 
 BYTES_PER_SAMPLE = 4 # each sample of type of float32 (4 bytes) from client
 SLOT_BYTES = SLOT_SAMPLES*BYTES_PER_SAMPLE
 
-STRUCT_KEYS_SIZE = 24 # bytes
+STRUCT_KEYS_SIZE = 16 # bytes
 DEMO_SLOTS = 200 # with 2048 samples each slot
 
 class Record(ctypes.Structure):
     _fields_ = [
-        ('write_number', ctypes.c_uint),
         ('timestamp_microseconds', ctypes.c_ulonglong),
         ('length', ctypes.c_uint),
         ('data', ctypes.c_float * SLOT_SAMPLES),
     ]
 
 
+# create a circular buffer
+ring = ringbuffer.RingBuffer(slot_bytes=SLOT_BYTES+STRUCT_KEYS_SIZE, slot_count=80)
+ring.new_writer()
+
+# thread for processing audio stream
+processor_thread = None
+#-------------------------------------------------------------------------------
+
 def writer(ring, start, count):
-    print ('START WRITING DATA ...')
+    print ('START receiving audio streaming data...')
     for i in range(start, start + count):
         data = os.urandom(SLOT_BYTES//2)
         audio = np.frombuffer(data, np.int16).flatten().astype(np.float32) / 32768.0
         time_micros = int(time.time() * 10**6)
         record = Record(
-            write_number=i,
             timestamp_microseconds=time_micros,
             length=len(audio))
         # Note: You can't pass 'data' to the constructor without doing an
@@ -71,26 +85,20 @@ def writer(ring, start, count):
 
         try:
             ring.try_write(record)
-            time.sleep(0.1)
+            time.sleep(0.05)
         except ringbuffer.WaitingForReaderError:
             print('Reader is too slow, dropping %d' % i)
             continue
-
-        if i and i % 100 == 0:
-            print('Wrote %d so far' % i)
 
     ring.writer_done()
     print('Writer is done')
 
 
-def reader(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer):    
-    print ('START READING DATA ...')
+def processing_audio(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer):    
+    print ('START processing audio data from ringbuffer ...')
     accumulated_buffer = []
     start = time.time()
     while True:
-        # wait for writer did the first write    
-        time.sleep(0.5)
-
         try:
             # print(f'writer index: {ring.writer.get().index}, \
             #       writer generation: {ring.writer.get().generation}')
@@ -99,12 +107,6 @@ def reader(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer):
             cur_writer_counter = ring.writer.get().counter
             print(f'cur_writer_counter: {cur_writer_counter}', end=', ')
             print(f'pointer.counter.value: {pointer.counter.value}')
-            
-            if cur_writer_counter == pointer.counter.value and ring.active.value <= 0:
-                end = time.time()
-                print(f'total processing time: {end - start} in sec.')
-                print(f'total streaming audio length: {DEMO_SLOTS*2048/16000} in sec.')
-                break
 
             while pointer.counter.value < cur_writer_counter:
                 data = ring.blocking_read(pointer)
@@ -112,13 +114,12 @@ def reader(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer):
                 accumulated_buffer.extend(record.data)
 
             # print('============ accumulated buffer data =======')
-            print(f'processing ... at {time.time()}')
-            print(f'accumulated buffer with {len(accumulated_buffer)} elements')
+            print(f'>>> processing {len(accumulated_buffer)} samples at {time.time()}')
             # print(f'accumulated buffer: {[i for i in accumulated_buffer]}')
                 
             # clear the accumulated buffer after 100 iters
             accumulated_buffer.clear()
-            time.sleep(1.5)
+            time.sleep(random.randint(1,4)/2)
         except ringbuffer.WriterFinishedError:
             return
 
@@ -126,17 +127,36 @@ def reader(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer):
         #     print('Reader %s saw record %d at timestamp %d with %d samples %d bytes each' %
         #           (id(pointer), record.write_number,
         #            record.timestamp_microseconds, record.length, sizeof(ctypes.c_float)))
-            # print(f'Data buffer of size {sizeof(record.data)} bytes')
-            # print(f'Data structure of size {sizeof(record)} bytes')
-            # print(f'Data buffer: {[i for i in record.data]}')
-
-       
+        #     print(f'Data buffer of size {sizeof(record.data)} bytes')
+        #     print(f'Data buffer: {[i for i in record.data]}')       
 
     print('Reader %r is done' % id(pointer))
 
 @socketio.on('binaryAudioData')
 def stream(message):
-    pass 
+    global ring, is_streaming
+
+    if not is_streaming: return
+
+    msg_length = len(message["chunk"])
+    if msg_length < MIN_CHUNK_SIZE: return
+              
+    audio = np.frombuffer(message["chunk"], np.int16).flatten().astype(np.float32) / 32768.0
+    time_micros = int(time.time() * 10**6)
+    record = Record(
+        timestamp_microseconds=time_micros,
+        length=len(audio))
+    # Note: You can't pass 'data' to the constructor without doing an
+    # additional copy to convert the bytes type to a c_ubyte * 1000. So
+    # instead, the constructor will initialize the 'data' field's bytes
+    # to zero, and then this assignment overwrites the data-sized part.
+    record.data[:len(audio)] = audio
+
+    try:
+        ring.try_write(record)
+        # print('%d samples are written to the ring!' % len(audio))
+    except ringbuffer.WaitingForReaderError:
+        print('Reader is too slow, dropping audio buffer (%d}) at timestamp: %.0f' % (len(audio), time_micros))
 
 @socketio.on("connect")
 def connected():
@@ -146,30 +166,32 @@ def connected():
     emit("connect", {"data": f"id: {request.sid} is connected"})       
 
 @socketio.on('start')
-def start():    
-    # create a circular buffer
-    ring = ringbuffer.RingBuffer(slot_bytes=SLOT_BYTES+STRUCT_KEYS_SIZE, slot_count=80)
-    ring.new_writer()
+def start():
+    global ring, processor_thread, is_streaming
 
-    processes = [
-        multiprocessing.Process(target=reader, args=(ring, ring.new_reader())),
-        multiprocessing.Process(target=writer, args=(ring, 1, DEMO_SLOTS)),
-    ]
+    print('on_start event from client fired!')
+    is_streaming = True
 
-    for p in processes:
-        p.daemon = True
-        p.start()
+    if not processor_thread:
+        # init processing thread
+        processor_thread = threading.Thread(target=processing_audio, args=(ring, ring.new_reader()))
+        print(f'initialized processing thread {processor_thread}')
+        processor_thread.start()
+        # processor_thread.join()
+    else:
+        print (f'existing processor_thread: {processor_thread}')
+        print (f'existing processor_thread.is_alive: {processor_thread.is_alive()}')
 
-    for p in processes:
-        # p.join(timeout=20) # terminate after 20 seconds
-        p.join()
-
-        assert not p.is_alive()
-        assert p.exitcode == 0
+        if not processor_thread.is_alive():
+            processor_thread.start()
+            print (f'started existing processor_thread: {processor_thread}')
+            # processor_thread.join()
 
 @socketio.on('stop')
 def stop():
-    pass
+    global is_streaming
+
+    is_streaming = False
 
 @socketio.on("disconnect")
 def disconnected():
