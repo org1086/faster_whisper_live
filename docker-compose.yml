@@ -1,0 +1,15 @@
+version: "3.4"
+
+services:
+  faster_whisper_live:
+    build: 
+      context: .
+      dockerfile: Dockerfile
+    container_name: faster_whisper_live
+    image: faster_whisper_image
+    volumes:
+      - .:/app
+    environment:
+      - MODEL_NAME=small
+      - DEVICE=auto
+      - COMPUTE_TYPE=auto

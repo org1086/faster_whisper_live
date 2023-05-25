@@ -1,0 +1,1 @@
+gunicorn -w 1 -b "0.0.0.0:5000" backend.app_live_whisper:app --timeout 300
