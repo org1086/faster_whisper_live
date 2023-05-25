@@ -44,6 +44,7 @@ MIN_CHUNK_SIZE = 480                    # in bytes
 # audio streaming in progress
 is_streaming = False
 
+f_processing_log = open('processing_logs.txt', 'w')
 #------------------------ringbuffer setups------------------------------------
 SLOT_SAMPLES = 2048 
 BYTES_PER_SAMPLE = 4 # each sample of type of float32 (4 bytes) from client
@@ -94,10 +95,11 @@ def writer(ring, start, count):
     print('Writer is done')
 
 
-def processing_audio(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer):    
+def processing_audio(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer):   
+    global is_streaming
+
     print ('START processing audio data from ringbuffer ...')
     accumulated_buffer = []
-    start = time.time()
     while True:
         try:
             # print(f'writer index: {ring.writer.get().index}, \
@@ -105,8 +107,8 @@ def processing_audio(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer):
             
             # get current counter of the writer 
             cur_writer_counter = ring.writer.get().counter
-            print(f'cur_writer_counter: {cur_writer_counter}', end=', ')
-            print(f'pointer.counter.value: {pointer.counter.value}')
+            # print(f'cur_writer_counter: {cur_writer_counter}', end=', ')
+            # print(f'pointer.counter.value: {pointer.counter.value}')
 
             while pointer.counter.value < cur_writer_counter:
                 data = ring.blocking_read(pointer)
@@ -114,12 +116,19 @@ def processing_audio(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer):
                 accumulated_buffer.extend(record.data)
 
             # print('============ accumulated buffer data =======')
-            print(f'>>> processing {len(accumulated_buffer)} samples at {time.time()}')
-            # print(f'accumulated buffer: {[i for i in accumulated_buffer]}')
-                
+            processing_msg = ''
+            if len(accumulated_buffer):
+                processing_msg = f'>>> processing {len(accumulated_buffer)} samples at {time.time()}'
+                print(processing_msg)
+                # print(f'accumulated buffer: {[i for i in accumulated_buffer]}')
+            
+            # save to processing logs to file
+            if is_streaming or len(accumulated_buffer) > 0:
+                f_processing_log.write(f'{processing_msg}\n')
+
             # clear the accumulated buffer after 100 iters
             accumulated_buffer.clear()
-            time.sleep(random.randint(1,4)/2)
+            time.sleep(random.randint(1,4)/2000)
         except ringbuffer.WriterFinishedError:
             return
 
@@ -167,7 +176,9 @@ def connected():
 
 @socketio.on('start')
 def start():
-    global ring, processor_thread, is_streaming
+    global ring, processor_thread, is_streaming, f_processing_log
+    
+    f_processing_log = open('processing_logs.txt', 'w')
 
     print('on_start event from client fired!')
     is_streaming = True
@@ -192,6 +203,8 @@ def stop():
     global is_streaming
 
     is_streaming = False
+    
+    f_processing_log.close()
 
 @socketio.on("disconnect")
 def disconnected():
