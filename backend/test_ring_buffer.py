@@ -94,6 +94,15 @@ def writer(ring, start, count):
     ring.writer_done()
     print('Writer is done')
 
+def burn_cpu(milliseconds):
+    start = now = time.time()
+    end = start + milliseconds / 1000
+    while True:
+        now = time.time()
+        if now >= end:
+            break
+        for i in range(100):
+            random.random() ** 1 / 2
 
 def processing_audio(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer):   
     global is_streaming
@@ -107,13 +116,14 @@ def processing_audio(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer):
             
             # get current counter of the writer 
             cur_writer_counter = ring.writer.get().counter
-            # print(f'cur_writer_counter: {cur_writer_counter}', end=', ')
-            # print(f'pointer.counter.value: {pointer.counter.value}')
+            cur_reader_counter = pointer.counter.value
+            if cur_reader_counter < cur_writer_counter:
+                print(f'->cur_reader_counter: {cur_reader_counter}', end=', ')
+                print(f'cur_writer_counter: {cur_writer_counter}')
 
-            while pointer.counter.value < cur_writer_counter:
-                data = ring.blocking_read(pointer)
-                record = Record.from_buffer(data)
-                accumulated_buffer.extend(record.data)
+                data = ring.blocking_read(pointer, cur_writer_counter - cur_reader_counter)
+                records = [Record.from_buffer(d) for d in data]
+                [accumulated_buffer.extend(record.data) for record in records]
 
             # print('============ accumulated buffer data =======')
             processing_msg = ''
@@ -123,12 +133,13 @@ def processing_audio(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer):
                 # print(f'accumulated buffer: {[i for i in accumulated_buffer]}')
             
             # save to processing logs to file
-            if is_streaming or len(accumulated_buffer) > 0:
+            if is_streaming:
                 f_processing_log.write(f'{processing_msg}\n')
 
             # clear the accumulated buffer after 100 iters
             accumulated_buffer.clear()
-            time.sleep(random.randint(1,4)/2000)
+            # time.sleep(random.randint(1,4)/2)
+            burn_cpu(1000*random.randint(1,4)/2)
         except ringbuffer.WriterFinishedError:
             return
 

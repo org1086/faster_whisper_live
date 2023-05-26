@@ -69,10 +69,10 @@ class Pointer:
         self.counter = multiprocessing.RawValue(ctypes.c_longlong, default)
         self.position = Position(slot_count)
 
-    def increment(self):
-        self.counter.value += 1
+    def increment(self, count=1):
+        self.counter.value += count
 
-        # Avoid reallocating Position repeatedly.
+    # Avoid reallocating Position repeatedly.
     def get(self):
         self.position.counter = self.counter.value
         return self.position
@@ -185,20 +185,26 @@ class RingBuffer:
             self.array[position.index] = data
             self.writer.increment()
 
-    def _has_read_conflict(self, reader_position):
+    def _has_read_conflict(self, reader_position, count=1):
         writer_position = self.writer.get()
-        return writer_position.counter <= reader_position.counter
+        return writer_position.counter <= reader_position.counter + count -1
 
-    def _try_read_no_lock(self, reader):
+    def _try_read_no_lock(self, reader, count=1):
         position = reader.get()
-        if self._has_read_conflict(position):
+        if self._has_read_conflict(position, count):
             if not self.active.value:
                 raise WriterFinishedError
             else:
                 raise WaitingForWriterError
 
-        data = self.array[position.index]
-        reader.increment()
+        last_index = (position.index + count -1)%self.slot_count
+        data_indexes = [*range(position.index, last_index +1)] \
+                         if last_index >= position.index \
+                         else [*range(position.index, self.slot_count), \
+                               *range(0, last_index + 1)]
+
+        data = [self.array[i] for i in data_indexes]
+        reader.increment(count)
         return data
 
     def try_read(self, reader):
@@ -222,14 +228,14 @@ class RingBuffer:
         with self.lock.for_read():
             return self._try_read_no_lock(reader)
 
-    def blocking_read(self, reader):
-        """Reads the next slot for a reader, blocking if it isn't filled yet.
+    def blocking_read(self, reader, count=1):
+        """Reads the next slot(s) for a reader, blocking if it isn't filled yet.
 
         Args:
             reader: Position previously returned by the call to new_reader().
 
         Returns:
-            bytearray containing a copy of the data from the slot. This
+            bytearray containing a copy of the data from the slot(s). This
             value is mutable an can be used to back ctypes objects, NumPy
             arrays, etc.
 
@@ -240,7 +246,7 @@ class RingBuffer:
         with self.lock.for_read():
             while True:
                 try:
-                    return self._try_read_no_lock(reader)
+                    return self._try_read_no_lock(reader, count)
                 except WaitingForWriterError:
                     self.lock.wait_for_write()
 
