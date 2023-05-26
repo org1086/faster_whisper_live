@@ -7,7 +7,7 @@ def print_message(msg: str):
     logging.info(msg)
 
 # read environment variables from container
-MODEL_NAME = os.getenv("MODEL_NAME") if os.getenv("MODEL_NAME") else "medium"
+MODEL_NAME = os.getenv("MODEL_NAME") if os.getenv("MODEL_NAME") else "tiny"
 DEVICE = os.getenv("DEVICE") if os.getenv("DEVICE") else "cpu"
 COMPUTE_TYPE = os.getenv("COMPUTE_TYPE") if os.getenv("COMPUTE_TYPE") else "auto"
 
@@ -18,7 +18,8 @@ print_message(f"COMPUTE_TYPE={COMPUTE_TYPE}")
 model = WhisperModel(MODEL_NAME, 
                      device=DEVICE,
                      compute_type=COMPUTE_TYPE,
-                     download_root="models/"
+                     download_root="models/",
+                     local_files_only=True
         )
 
 print(f"Model whisper `{MODEL_NAME}` loaded.")
