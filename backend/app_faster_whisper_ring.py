@@ -64,7 +64,7 @@ SLOT_BYTES = 4096
 SLOT_COUNT = 160        # ring_buffer with 160*4096 in bytes
                         # or 160*4096/2 (samples) or 160*4096/2/16000 ~ 20 secs
 STRUCT_KEYS_SIZE = 16   # bytes
-MIN_SLOTS = 8           # 8*2048 (samples) ~ 8*2048/16000 ~ 1.024 secs
+MIN_SLOTS = 12          # 12*2048 (samples) ~ 12*2048/16000 ~ 1.5 secs
 DEMO_SLOTS = 200 # with 2048 samples each slot
 
 class Record(ctypes.Structure):
@@ -108,7 +108,7 @@ print_message(f"Model faster-whisper `{WHISPER_MODEL_NAME}` loaded.")
 #-------------------------------------------------------------------------------
 
 #------------------------Main processing functions------------------------------
-sampling_count = 0
+# sampling_count = 0
 def whisper_transribe(audio, isFake: bool = False) -> str:
     '''
     Transcribe audio frames using Whisper model.
@@ -116,22 +116,22 @@ def whisper_transribe(audio, isFake: bool = False) -> str:
     - isFake: fake transcription with random return value and time of execution.
     '''
     global LANGUAGES
-    global sampling_count
-    sampling_count += 1    
+    # global sampling_count
+    # sampling_count += 1    
 
-    # TEST: save recording to file to test audio quality
-    import speech_recognition as sr
-    import io    
-    audio_data = sr.AudioData(audio, sample_rate=SAMPLE_RATE, sample_width=2)
-    wav_data = audio_data.get_wav_data()
-    print_message(f"wav_data length: {len(wav_data)}")
-    audio_int16 = np.frombuffer(wav_data, np.int16).flatten()
-    print (f"wav audio sample in Int16 flattened buffer length: {len(audio_int16)}")
-    wav_data_io = io.BytesIO(wav_data)
-    # Write wav data to the temporary file as bytes.
-    with open(f'recorded_from_mic_{sampling_count}.wav', 'w+b') as f:
-        f.write(wav_data_io.read())
-    # END of the test
+    # ======= TEST: save recording to file to test audio quality =======================
+    # import speech_recognition as sr
+    # import io    
+    # audio_data = sr.AudioData(audio, sample_rate=SAMPLE_RATE, sample_width=2)
+    # wav_data = audio_data.get_wav_data()
+    # print_message(f"wav_data length: {len(wav_data)}")
+    # audio_int16 = np.frombuffer(wav_data, np.int16).flatten()
+    # print_message(f"wav audio sample in Int16 flattened buffer length: {len(audio_int16)}")
+    # wav_data_io = io.BytesIO(wav_data)
+    # # Write wav data to the temporary file as bytes.
+    # with open(f'recorded_from_mic_{sampling_count}.wav', 'w+b') as f:
+    #     f.write(wav_data_io.read())
+    # ============================== END of the test ===================================
 
     if isFake:
         time.sleep(random.randrange(6,12)/2.0)
@@ -152,7 +152,7 @@ def whisper_transribe(audio, isFake: bool = False) -> str:
 def whisper_processing(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer):   
     global is_streaming
 
-    print ('START processing audio data from ringbuffer ...')
+    print_message('START processing audio data from ringbuffer ...')
     accumulated_bytes = np.array([], np.byte)
     while True:
         try:
@@ -165,9 +165,10 @@ def whisper_processing(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer)
             if cur_writer_counter - cur_reader_counter < MIN_SLOTS:
                 time.sleep(0.05)
                 continue
+            # if cur_writer_counter - cur_reader_counter <=0: continue
             
-            print_message(f'->cur_reader_counter: {cur_reader_counter}', end=', ')
-            print_message(f'cur_writer_counter: {cur_writer_counter}')
+            # print_message(f'->cur_reader_counter: {cur_reader_counter}', end=', ')
+            # print_message(f'cur_writer_counter: {cur_writer_counter}')
 
             data = ring.blocking_read(pointer, cur_writer_counter - cur_reader_counter)
             accumulated_bytes= np.concatenate([Record.from_buffer(d).data for d in data])
@@ -175,7 +176,7 @@ def whisper_processing(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer)
             if not any(accumulated_bytes): continue
  
             processing_msg = f'>>> processing {len(accumulated_bytes)} bytes at {time.time()}'
-            print_message(processing_msg)
+            # print_message(processing_msg)
             # print_message(f'accumulated buffer: {[i for i in accumulated_buffer]}')
             
             # save to processing logs to file
@@ -191,15 +192,17 @@ def whisper_processing(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer)
 
             # clear the accumulated buffer
             accumulated_bytes = np.array([], np.byte)
-            time.sleep(random.randint(1,4)/200)
-            # burn_cpu(1000*random.randint(1,4)/2)
+            # time.sleep(random.randint(1,4)/200)
+            # burn_cpu(1000*random.randint(1,4)/0.5)
 
         except ringbuffer.WriterFinishedError:
             return
 
+packages_to_ring_count = 0 
 @socketio.on('binaryAudioData')
 def stream(message):
-    global ring, is_streaming
+    global ring, is_streaming 
+    # global packages_to_ring_count, start_audio_transfer, stop_audio_transfer
 
     if not is_streaming: return
 
@@ -219,8 +222,21 @@ def stream(message):
     try:
         ring.try_write(record)
         # print_message('%d samples are written to the ring!' % len(audio))
+
+        # BEGIN TEST `stream audio to ring` performance with/without heavy CPU computation
+        # packages_to_ring_count +=1
+        # if not packages_to_ring_count % 100: 
+        #     stop_audio_transfer = time.time()
+        #     print_message(f'packages to ring: {packages_to_ring_count}')
+        #     print_message(f'total time the pushing 100 packages to ring: {stop_audio_transfer - start_audio_transfer}')
+            
+        #     with open("test_ring_in_perf_light_cpu_computation.txt", "w") as f:
+        #         f.write(f'total time the pushing 200 packages to ring: {stop_audio_transfer - start_audio_transfer}\n')
+        #     start_audio_transfer = stop_audio_transfer 
+        # END OF TEST           
+
     except ringbuffer.WaitingForReaderError:
-        print_message('Reader is too slow, dropping audio buffer (%d) at timestamp: %.0f' % (len(audio), time_micros))
+        print_message('Reader is too slow, dropping audio buffer (%d) at timestamp: %.0f' % (len(message["chunk"]), time_micros))
 
 @socketio.on("connect")
 def connected():
@@ -228,14 +244,18 @@ def connected():
     print_message(f"----> Client [{request.sid}] connected!")
     emit("connect", {"data": f"id: {request.sid} is connected"})       
 
+start_audio_transfer = time.time()
 @socketio.on('start')
 def start():
     global ring, processor_thread, is_streaming, f_logs
+    # global start_audio_transfer
     
     f_logs = open('processing_logs.txt', 'w')
 
     print_message('>>> on_start event from client fired!')
     is_streaming = True
+
+    # start_audio_transfer = time.time()
 
     if not processor_thread:
         # init processing thread
@@ -244,20 +264,19 @@ def start():
         processor_thread.start()
         # processor_thread.join()
     else:
-        print (f'>>> existing processor_thread: {processor_thread}')
-        print (f'>>> existing processor_thread.is_alive: {processor_thread.is_alive()}')
+        print_message(f'>>> existing processor_thread: {processor_thread}')
+        print_message(f'>>> existing processor_thread.is_alive: {processor_thread.is_alive()}')
 
         if not processor_thread.is_alive():
             processor_thread.start()
-            print (f'>>> started existing processor_thread: {processor_thread}')
+            print_message(f'>>> started existing processor_thread: {processor_thread}')
             # processor_thread.join()
 
 @socketio.on('stop')
 def stop():
-    global is_streaming
+    global is_streaming, f_logs 
 
-    is_streaming = False
-    
+    is_streaming = False    
     f_logs.close()
 
 @socketio.on("disconnect")
