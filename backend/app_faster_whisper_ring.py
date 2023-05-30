@@ -20,11 +20,13 @@ from lorem_text import lorem
 import whisper
 from faster_whisper import WhisperModel
 from ringbuffer import ringbuffer
+from live_whisper_processor import LiveWhisperProcessor, TranscriptionResult
+from logger import initialize_logger
+
+# init logger
+logger = initialize_logger(__name__, logging.DEBUG)
 
 # ------------------------ Helper functions ---------------------------------------
-def print_message(msg: str, end='\n'):
-    print(msg, end=end)
-    logging.info(msg)
 
 def burn_cpu(milliseconds):
     start = now = time.time()
@@ -84,38 +86,39 @@ processor_thread = None
 
 #------------------------Whisper model setups-----------------------------------
 # get support language set for output
-LANGUAGES = os.getenv('LANGUAGES') if os.getenv('LANGUAGES') else "vi,en"
-LANGUAGES  = [item.strip() for item in LANGUAGES.split(',')]
+LANGUAGE = os.getenv('LANGUAGE') if os.getenv('LANGUAGES') else "vi"
 
 # Get environment variables
 WHISPER_MODEL_NAME = os.getenv('WHISPER_MODEL_NAME') if os.getenv('WHISPER_MODEL_NAME') else "medium"
 DEVICE = os.getenv("DEVICE") if os.getenv("DEVICE") else "cpu"
 COMPUTE_TYPE = os.getenv("COMPUTE_TYPE") if os.getenv("COMPUTE_TYPE") else "auto"
 
-print_message(">>> Loading the Faster-Whisper model...")
-print_message(f">>> model_name={WHISPER_MODEL_NAME}")
-print_message(f">>> device={DEVICE}")
-print_message(f">>> compute_type={COMPUTE_TYPE}")
+logger.info(">>> Loading the Faster-Whisper model...")
+logger.info(f">>> model_name={WHISPER_MODEL_NAME}")
+logger.info(f">>> device={DEVICE}")
+logger.info(f">>> compute_type={COMPUTE_TYPE}")
 
 # model = whisper.load_model(WHISPER_MODEL_NAME)
-model = WhisperModel(WHISPER_MODEL_NAME, 
-                     device=DEVICE,
-                     compute_type=COMPUTE_TYPE,
-                     download_root="models/",
-                     local_files_only=True
-        )
-print_message(f"Model faster-whisper `{WHISPER_MODEL_NAME}` loaded.")
+# model = WhisperModel(WHISPER_MODEL_NAME, 
+#                      device=DEVICE,
+#                      compute_type=COMPUTE_TYPE,
+#                      download_root="models/",
+#                      local_files_only=True
+#         )
+# logger.info(f"Model faster-whisper `{WHISPER_MODEL_NAME}` loaded.")
+
+processcor = LiveWhisperProcessor(model_name=WHISPER_MODEL_NAME, language=LANGUAGE, device=DEVICE, compute_type=COMPUTE_TYPE, \
+                                  download_root="models/", local_files_only=True)
 #-------------------------------------------------------------------------------
 
 #------------------------Main processing functions------------------------------
 # sampling_count = 0
-def whisper_transribe(audio, isFake: bool = False) -> str:
+def whisper_transribe(audio, shifted_samples: int, isFake: bool = False) -> str:
     '''
     Transcribe audio frames using Whisper model.
     - audio: tranformed streaming audio buffer of type of float32-type array.
     - isFake: fake transcription with random return value and time of execution.
     '''
-    global LANGUAGES
     # global sampling_count
     # sampling_count += 1    
 
@@ -124,9 +127,9 @@ def whisper_transribe(audio, isFake: bool = False) -> str:
     # import io    
     # audio_data = sr.AudioData(audio, sample_rate=SAMPLE_RATE, sample_width=2)
     # wav_data = audio_data.get_wav_data()
-    # print_message(f"wav_data length: {len(wav_data)}")
+    # logger.info(f"wav_data length: {len(wav_data)}")
     # audio_int16 = np.frombuffer(wav_data, np.int16).flatten()
-    # print_message(f"wav audio sample in Int16 flattened buffer length: {len(audio_int16)}")
+    # logger.info(f"wav audio sample in Int16 flattened buffer length: {len(audio_int16)}")
     # wav_data_io = io.BytesIO(wav_data)
     # # Write wav data to the temporary file as bytes.
     # with open(f'recorded_from_mic_{sampling_count}.wav', 'w+b') as f:
@@ -135,28 +138,22 @@ def whisper_transribe(audio, isFake: bool = False) -> str:
 
     if isFake:
         time.sleep(random.randrange(6,12)/2.0)
-        return ''.join([lorem.words(random.randrange(7,20)), ' '])
+        return TranscriptionResult(''.join([lorem.words(random.randrange(2, 7)), ' ']), \
+                                   ''.join([lorem.words(random.randrange(7, 15)), ' ']))
     
-    audio_float32 = np.frombuffer(audio, np.int16).flatten().astype(np.float32) / 32768.0
-    print_message(f"-> sample length={len(audio_float32) / SAMPLE_RATE} in second.")
-    # audio = whisper.pad_or_trim(audio)
-    segments, info = model.transcribe(audio_float32)
+    logger.info(f"-> sample length={len(audio)/(2*SAMPLE_RATE)} in second.")
+    last_confirmed_text, validating_text = processcor.transcribe(audio)
 
-    # ouput only text in support languages
-    transcript = ''
-    if info.language in LANGUAGES:
-        transcript = ''.join([segment.text for segment in segments])
-
-    return transcript
+    return TranscriptionResult(last_confirmed_text, validating_text)
 
 def whisper_processing(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer):   
     global is_streaming
 
-    print_message('START processing audio data from ringbuffer ...')
+    logger.info('START processing audio data from ringbuffer ...')
     accumulated_bytes = np.array([], np.byte)
     while True:
         try:
-            # print_message(f'writer index: {ring.writer.get().index}, \
+            # logger.info(f'writer index: {ring.writer.get().index}, \
             #       writer generation: {ring.writer.get().generation}')
             
             # get current counter of the writer 
@@ -167,8 +164,8 @@ def whisper_processing(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer)
                 continue
             # if cur_writer_counter - cur_reader_counter <=0: continue
             
-            # print_message(f'->cur_reader_counter: {cur_reader_counter}', end=', ')
-            # print_message(f'cur_writer_counter: {cur_writer_counter}')
+            # logger.info(f'->cur_reader_counter: {cur_reader_counter}', end=', ')
+            # logger.info(f'cur_writer_counter: {cur_writer_counter}')
 
             data = ring.blocking_read(pointer, cur_writer_counter - cur_reader_counter)
             accumulated_bytes= np.concatenate([Record.from_buffer(d).data for d in data])
@@ -176,8 +173,8 @@ def whisper_processing(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer)
             if not any(accumulated_bytes): continue
  
             processing_msg = f'>>> processing {len(accumulated_bytes)} bytes at {time.time()}'
-            # print_message(processing_msg)
-            # print_message(f'accumulated buffer: {[i for i in accumulated_buffer]}')
+            # logger.info(processing_msg)
+            # logger.info(f'accumulated buffer: {[i for i in accumulated_buffer]}')
             
             # save to processing logs to file
             if is_streaming:
@@ -187,8 +184,8 @@ def whisper_processing(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer)
             # transcribe with faster-whisper model
             text = whisper_transribe(accumulated_bytes, isFake=False)
             stop = time.perf_counter()
-            print_message(f"-> inference time: {stop - start}")
-            print_message(f"-> transcription={text}")
+            logger.info(f"-> inference time: {stop - start}")
+            logger.info(f"-> transcription={text}")
 
             # clear the accumulated buffer
             accumulated_bytes = np.array([], np.byte)
@@ -221,14 +218,14 @@ def stream(message):
 
     try:
         ring.try_write(record)
-        # print_message('%d samples are written to the ring!' % len(audio))
+        # logger.info('%d samples are written to the ring!' % len(audio))
 
         # BEGIN TEST `stream audio to ring` performance with/without heavy CPU computation
         # packages_to_ring_count +=1
         # if not packages_to_ring_count % 100: 
         #     stop_audio_transfer = time.time()
-        #     print_message(f'packages to ring: {packages_to_ring_count}')
-        #     print_message(f'total time the pushing 100 packages to ring: {stop_audio_transfer - start_audio_transfer}')
+        #     logger.info(f'packages to ring: {packages_to_ring_count}')
+        #     logger.info(f'total time the pushing 100 packages to ring: {stop_audio_transfer - start_audio_transfer}')
             
         #     with open("test_ring_in_perf_light_cpu_computation.txt", "w") as f:
         #         f.write(f'total time the pushing 200 packages to ring: {stop_audio_transfer - start_audio_transfer}\n')
@@ -236,12 +233,12 @@ def stream(message):
         # END OF TEST           
 
     except ringbuffer.WaitingForReaderError:
-        print_message('Reader is too slow, dropping audio buffer (%d) at timestamp: %.0f' % (len(message["chunk"]), time_micros))
+        logger.info('Reader is too slow, dropping audio buffer (%d) at timestamp: %.0f' % (len(message["chunk"]), time_micros))
 
 @socketio.on("connect")
 def connected():
     """event listener when client connects to the server"""
-    print_message(f"----> Client [{request.sid}] connected!")
+    logger.info(f"----> Client [{request.sid}] connected!")
     emit("connect", {"data": f"id: {request.sid} is connected"})       
 
 start_audio_transfer = time.time()
@@ -252,7 +249,7 @@ def start():
     
     f_logs = open('processing_logs.txt', 'w')
 
-    print_message('>>> on_start event from client fired!')
+    logger.info('>>> on_start event from client fired!')
     is_streaming = True
 
     # start_audio_transfer = time.time()
@@ -260,16 +257,16 @@ def start():
     if not processor_thread:
         # init processing thread
         processor_thread = threading.Thread(target=whisper_processing, args=(ring, ring.new_reader()))
-        print_message(f'>>> initialized processing thread {processor_thread}')
+        logger.info(f'>>> initialized processing thread {processor_thread}')
         processor_thread.start()
         # processor_thread.join()
     else:
-        print_message(f'>>> existing processor_thread: {processor_thread}')
-        print_message(f'>>> existing processor_thread.is_alive: {processor_thread.is_alive()}')
+        logger.info(f'>>> existing processor_thread: {processor_thread}')
+        logger.info(f'>>> existing processor_thread.is_alive: {processor_thread.is_alive()}')
 
         if not processor_thread.is_alive():
             processor_thread.start()
-            print_message(f'>>> started existing processor_thread: {processor_thread}')
+            logger.info(f'>>> started existing processor_thread: {processor_thread}')
             # processor_thread.join()
 
 @socketio.on('stop')
@@ -282,7 +279,7 @@ def stop():
 @socketio.on("disconnect")
 def disconnected():
     """event listener when client disconnects to the server"""
-    print_message("----> Client disconnected")
+    logger.info("----> Client disconnected")
     emit("disconnect", f"user disconnected", broadcast=True)
 
 # flask root endpoint
