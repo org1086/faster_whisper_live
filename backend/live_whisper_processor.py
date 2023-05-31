@@ -3,7 +3,7 @@ from faster_whisper import WhisperModel
 from faster_whisper.transcribe import Word, Segment
 from logger import initialize_logger
 import numpy as np
-from typing import NamedTuple, Iterable
+from typing import NamedTuple, Iterable, List
 import time
 
 logger = initialize_logger(__name__, logging.DEBUG)
@@ -85,7 +85,7 @@ class ShiftedWindow(NamedTuple):
     start: int                      # buffer start position
     length: int                     # buffer length
     end: int                        # buffer end position
-    aligned_words: Iterable[Word]   # words with alignment
+    aligned_words: List[Word]       # words with alignment
 
 class LiveWhisperProcessorBase:
 
@@ -104,16 +104,13 @@ class LiveWhisperProcessorBase:
     def process(self, **kwargs):
         raise NotImplemented("must be implemented in the child class")
     
-    def estimate_window_words(self, **kwargs):
-        raise NotImplemented("must be implemented in the child class")
-    
-    def estimate_overlaping_window_words(self, **kwargs):
-        raise NotImplemented("must be implemented in the child class")    
-    
     def process_confirmed_words(self, **kwargs):
         raise NotImplemented("must be implemented in the child class")
     
     def process_overlaping_words(self, **kwargs):
+        raise NotImplemented("must be implemented in the child class")    
+
+    def get_window_words(self, **kwargs):
         raise NotImplemented("must be implemented in the child class")
     
     def process_new_words(self, **kwargs):
@@ -131,8 +128,7 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
                  local_files_only: bool = True,
                  window_samples: int = 160000,
                  sample_rate: int = 16000,
-                 left_error_thresh: float = 0.15,
-                 right_error_thresh: float = 0.2   
+                 intersection_thresh: float = 0.7  
                 ):
         
         self.model_name = model_name
@@ -143,8 +139,9 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
         self.local_files_only = local_files_only
         self.window_samples = window_samples
         self.sample_rate = sample_rate
-        self.left_error_thresh = left_error_thresh
-        self.right_error_thresh = right_error_thresh
+        self.intersection_thresh = intersection_thresh      # if the intersect ratio of the extreme word with 
+                                                            # the concerning window larger than this threshold
+                                                            # then put this word into your bag.
 
         # ring buffer to store buffers to process
         self.audio_buffer = RingBuffer(self.window_samples)
@@ -205,62 +202,109 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
         - previous_windos of type `ShiftedWindow`
         - Return: `TranscriptionResult` with last confirmed text and validating text.
         """
+        result = TranscriptionResult()
 
+        confirmed_words = self.process_confirmed_words()
+        overlaping_words = self.process_overlaping_words()
+        new_words = self.process_new_words()
 
-        pass
+        self.confirmed_words.extend(confirmed_words)
+        self.validating_words = overlaping_words
+        self.validating_words.extend(new_words)
 
-    def estimate_window_words(self, 
-                              start: int, 
-                              end: int, 
-                              aligned_words: Iterable[Word]
-                              ) -> Iterable[Word]:
-        pass
-    
-    def estimate_overlaping_window_words(self, 
-                              start: int, 
-                              end: int
-                              ) -> Iterable[Word]:
-        pass
+        result.last_confirmed = ''.join([w.word for w in confirmed_words])
+        result.validating = ''.join([w.word for w in self.validating_words])
 
-    def process_confirmed_words(self):
+        return result
+
+    def process_confirmed_words(self) -> List[Word]:
         if not len(self.previous_window.aligned_words):
-            return None
+            return []
         
-        if self.previous_window.start < self.current_window.start:
-            return self.estimate_window_words(self.previous_window.start, 
-                                              self.current_window.start -1, 
-                                              self.previous_window.aligned_words
-                                              )       
-        return None
+        if self.previous_window.start < self.current_window.start:            
+            end_sec = (self.current_window.start - 1) / self.sample_rate
 
-    def process_overlaping_words(self):
+            confirmed_words = []
+            for w in self.previous_window.aligned_words:
+                if w.end <= end_sec:
+                    confirmed_words.append(w)
+                elif w.start < end_sec:
+                    if (end_sec - w.start) / (w.end - w.start) > self.intersection_thresh:
+                        confirmed_words.append(w)
+                else:
+                    break
+
+            return confirmed_words     
+        return []
+
+    def get_window_words(self, start_sec: int, end_sec: int, aligned_words: Iterable[Word]) -> List[Word]:
+        window_words = []
+        for w in aligned_words:
+            if w.start >= start_sec:
+                if w.end <= end_sec:
+                    window_words.append(w)
+                elif w.start < end_sec:
+                    if (end_sec - w.start) / (w.end - w.start) > self.intersection_thresh:
+                        window_words.append(w)
+            elif w.end > start_sec:
+                if (w.end - start_sec) / (w.end - w.start) > self.intersection_thresh:
+                    window_words.append(w)
+        return window_words
+    
+    def process_overlaping_words(self) -> List[Word]:
         if not (len(self.previous_window.aligned_words) or len(self.current_window.aligned_words)) :
-            return None
+            return []
         
         if self.previous_window.end > self.current_window.start:
-            return self.estimate_overlaping_window_words(self.current_window.start, 
-                                                         self.previous_window.end)
-        
-        return None
+            start_sec = self.current_window.start / self.sample_rate
+            end_sec = self.previous_window.end / self.sample_rate
 
-    def process_new_words(self):
+            overlap_prev_words = self.get_window_words(start_sec, end_sec, self.previous_window.aligned_words)
+            overlap_cur_words = self.get_window_words(start_sec, end_sec, self.current_window.aligned_words)
+
+            #TODO: update self.previous_window and self.current_window for successive interation
+
+            if not len(overlap_prev_words):
+                return overlap_cur_words
+            if not len(overlap_cur_words):
+                return overlap_prev_words
+
+            prev_words_confidence = sum([w.probability for w in overlap_prev_words])/ len(overlap_prev_words)
+            cur_words_confidence = sum([w.probability for w in overlap_cur_words])/ len(overlap_cur_words)
+            
+            if prev_words_confidence > cur_words_confidence:
+                return overlap_prev_words
+            else:
+                return overlap_cur_words
+                
+        return []
+
+    def process_new_words(self) -> List[Word]:
         if not len(self.current_window.aligned_words):
-            return None
+            return []
         
         if self.previous_window.end < self.current_window.end:
-            return self.estimate_window_words(self.previous_window.end +1,                
-                                              self.current_window.end,                
-                                              self.current_window.aligned_words
-                )
-        
-        return None
+            start_sec = (self.previous_window.end + 1) / self.sample_rate
+
+            new_words = []
+            for w in reversed(self.current_window.aligned_words):
+                if w.start >= start_sec:
+                    new_words.append(w)
+                elif w.end > start_sec:
+                    if (w.end - start_sec) / (w.end - w.start) > self.intersection_thresh:
+                        new_words.append(w)
+                else:
+                    break
+
+            return list(reversed(new_words))        
+        return []
     
-    def shift_word(self, word: Word, shifted_secs: int):
+    def shift_word(self, word: Word, shifted_secs: int) -> Word:
         word.start += shifted_secs
         word.end += shifted_secs
         return word
     
-    def align_words(self, segments: Iterable[Segment], start_position: int):
+    def align_words(self, segments: Iterable[Segment], start_position: int) -> List[Word]:
         shifted_secs = start_position / self.sample_rate
         return [self.shift_word(word, shifted_secs) for segment in segments for word in segment]
 
