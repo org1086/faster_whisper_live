@@ -81,23 +81,44 @@ class TranscriptionResult(NamedTuple):
     last_confirmed: str
     validating: str
 
-class BufferWindow(NamedTuple):
-    position: int
-    length: int
+class ShiftedWindow(NamedTuple):
+    start: int                      # buffer start position
+    length: int                     # buffer length
+    end: int                        # buffer end position
+    aligned_words: Iterable[Word]   # words with alignment
 
 class LiveWhisperProcessorBase:
 
     def __init__(self, **kwargs):
         raise NotImplemented("must be implemented in the child class")    
 
-    def load_model(self):
+    def load_model(self, **kwargs):
         raise NotImplemented("must be implemented in the child class")
 
     def transribe(self, **kwargs):
         raise NotImplemented("must be implemented in the child class")
-
-    def processing(self, **kwargs):
+    
+    def align_words(self, **kwargs):
         raise NotImplemented("must be implemented in the child class")
+
+    def process(self, **kwargs):
+        raise NotImplemented("must be implemented in the child class")
+    
+    def estimate_window_words(self, **kwargs):
+        raise NotImplemented("must be implemented in the child class")
+    
+    def estimate_overlaping_window_words(self, **kwargs):
+        raise NotImplemented("must be implemented in the child class")    
+    
+    def process_confirmed_words(self, **kwargs):
+        raise NotImplemented("must be implemented in the child class")
+    
+    def process_overlaping_words(self, **kwargs):
+        raise NotImplemented("must be implemented in the child class")
+    
+    def process_new_words(self, **kwargs):
+        raise NotImplemented("must be implemented in the child class")
+    
     
 
 class LiveWhisperProcessor(LiveWhisperProcessorBase):
@@ -108,7 +129,10 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
                  compute_type: str = 'auto',
                  download_root: str = 'models/', 
                  local_files_only: bool = True,
-                 window_samples: int = 160000                 
+                 window_samples: int = 160000,
+                 sample_rate: int = 16000,
+                 left_error_thresh: float = 0.15,
+                 right_error_thresh: float = 0.2   
                 ):
         
         self.model_name = model_name
@@ -118,14 +142,17 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
         self.download_root = download_root
         self.local_files_only = local_files_only
         self.window_samples = window_samples
+        self.sample_rate = sample_rate
+        self.left_error_thresh = left_error_thresh
+        self.right_error_thresh = right_error_thresh
 
         # ring buffer to store buffers to process
         self.audio_buffer = RingBuffer(self.window_samples)
 
         self.counter = 0                    # sample counter current sampling time
 
-        self.previous_window = BufferWindow(0,0)
-        self.current_window = BufferWindow(0,0)
+        self.previous_window = ShiftedWindow(0,0,0)
+        self.current_window = ShiftedWindow(0,0,0)
 
         self.confirmed_words = []           # array of Word object
         self.validating_words = []          # array of Word object  
@@ -155,21 +182,87 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
         self.counter += len(new_audio)
         
         if self.counter <= self.window_samples:
-            self.current_window.position = 0
+            self.current_window.start = 0
             self.current_window.length = self.counter
+            self.current_window.end = self.current_window.start + self.current_window.length
         else:
-            self.current_window.position = self.counter - self.window_samples
+            self.current_window.start = self.counter - self.window_samples
             self.current_window.length = self.window_samples
+            self.current_window.end = self.current_window.start + self.current_window.length
         
-        # think how to calculate confirmed window, overlapping window, and new window
-        
+        segments, _ = self.model.transcribe(new_audio, language = self.language)
 
-        # segments, _ = self.model.transcribe(audio_float32, language = self.language)
+        aligned_words = self.align_words(segments, self.current_window.start)
+        self.current_window.aligned_words = aligned_words
 
-        # return self.processing(segments)
+        return self.process()
 
-    def processing(self, new_segments: Iterable[Segment]) -> TranscriptionResult:
+    def process(self) -> TranscriptionResult:        
+        """
+        Process and return transcription result. Calculate and produce confirmed words,
+        validating words by estimating overlapping windows over time. Required data:
+        - current_window of type `ShiftedWindow`
+        - previous_windos of type `ShiftedWindow`
+        - Return: `TranscriptionResult` with last confirmed text and validating text.
+        """
+
+
         pass
+
+    def estimate_window_words(self, 
+                              start: int, 
+                              end: int, 
+                              aligned_words: Iterable[Word]
+                              ) -> Iterable[Word]:
+        pass
+    
+    def estimate_overlaping_window_words(self, 
+                              start: int, 
+                              end: int
+                              ) -> Iterable[Word]:
+        pass
+
+    def process_confirmed_words(self):
+        if not len(self.previous_window.aligned_words):
+            return None
+        
+        if self.previous_window.start < self.current_window.start:
+            return self.estimate_window_words(self.previous_window.start, 
+                                              self.current_window.start -1, 
+                                              self.previous_window.aligned_words
+                                              )       
+        return None
+
+    def process_overlaping_words(self):
+        if not (len(self.previous_window.aligned_words) or len(self.current_window.aligned_words)) :
+            return None
+        
+        if self.previous_window.end > self.current_window.start:
+            return self.estimate_overlaping_window_words(self.current_window.start, 
+                                                         self.previous_window.end)
+        
+        return None
+
+    def process_new_words(self):
+        if not len(self.current_window.aligned_words):
+            return None
+        
+        if self.previous_window.end < self.current_window.end:
+            return self.estimate_window_words(self.previous_window.end +1,                
+                                              self.current_window.end,                
+                                              self.current_window.aligned_words
+                )
+        
+        return None
+    
+    def shift_word(self, word: Word, shifted_secs: int):
+        word.start += shifted_secs
+        word.end += shifted_secs
+        return word
+    
+    def align_words(self, segments: Iterable[Segment], start_position: int):
+        shifted_secs = start_position / self.sample_rate
+        return [self.shift_word(word, shifted_secs) for segment in segments for word in segment]
 
 if __name__ == "__main__":
     my_ring = RingBuffer(160000)
