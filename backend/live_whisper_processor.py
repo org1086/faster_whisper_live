@@ -4,7 +4,7 @@ from faster_whisper.transcribe import Word, Segment
 from logger import initialize_logger
 import numpy as np
 from typing import NamedTuple, Iterable
-import collections
+import time
 
 logger = initialize_logger(__name__, logging.DEBUG)
 
@@ -25,6 +25,8 @@ class RingBuffer:
             """ Extend multiple elements to the ring. """
 
             # WARN: update current position beforehand
+            # then trace back to update the last update data
+            old_pos = self.cur
             self.cur = (self.cur + len(xs)) % self.max
 
             # update data to the ring
@@ -33,9 +35,11 @@ class RingBuffer:
                 self.data[self.cur:] = update_data[:(self.max-self.cur)]
                 self.data[:self.cur] = update_data[(self.max-self.cur):]
             else:
-                update_indexes = [ i%self.max for i in range(self.cur + self.max - len(xs), self.cur + self.max)]
-                for i,j in zip(update_indexes,xs):
-                    self.data[i] = j
+                if old_pos + len(xs) <= self.max:
+                    self.data[self.cur:self.cur + len(xs) - 1] = xs
+                else:
+                    self.data[old_pos:] = xs[:self.max - old_pos]
+                    self.data[:old_pos + len(xs) - self.max] = xs[self.max - old_pos:]
 
         def get(self):
             """ return list of elements in correct order """
@@ -52,7 +56,7 @@ class RingBuffer:
     
     def extend(self, xs):
         """ Extend multiple elements to the buffer. """
-        if self.max - len(self.data) >= len(xs):
+        if self.cur + len(xs) <= self.max:
             self.data.extend(xs)
             if len(self.data) == self.max:
                 self.cur = 0
@@ -60,7 +64,7 @@ class RingBuffer:
             else:
                 self.cur += len(xs)
         else:
-            # add 0s to fill the buffer
+            # TRICK: add 0s to fill the buffer
             self.data.extend([0.0]*(self.max - self.cur))
 
             # switch this class to __Full
@@ -157,9 +161,7 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
             self.current_window.position = self.counter - self.window_samples
             self.current_window.length = self.window_samples
         
-
-
-        # think how to calculate confirmed window, overlapping window, and new window 
+        # think how to calculate confirmed window, overlapping window, and new window
         
 
         # segments, _ = self.model.transcribe(audio_float32, language = self.language)
@@ -170,27 +172,37 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
         pass
 
 if __name__ == "__main__":
-    my_ring = RingBuffer(10)
+    my_ring = RingBuffer(160000)
 
-    print(my_ring.data)
-    print(my_ring.cur)
+    start = time.time()
 
-    my_ring.append(1)
-    print(my_ring.data)
-    print(my_ring.cur)
+    # print(my_ring.data)
+    # print(my_ring.cur)
 
-    my_ring.extend(range(2,5))
-    print(my_ring.data)
-    print(my_ring.cur)
+    # my_ring.append(1)
+    # print(my_ring.data)
+    # print(my_ring.cur)
 
-    my_ring.append(5)
-    print(my_ring.data)
-    print(my_ring.cur)
+    # my_ring.extend(range(2,5))
+    # print(my_ring.data)
+    # print(my_ring.cur)
 
-    my_ring.extend(range(6,11))
-    print(my_ring.data)
-    print(my_ring.cur)
+    # my_ring.append(5)
+    # print(my_ring.data)
+    # print(my_ring.cur)
 
-    my_ring.extend(range(11,115))
-    print(my_ring.data)
-    print(my_ring.cur)
+    # my_ring.extend(range(6,11))
+    # print(my_ring.data)
+    # print(my_ring.cur)
+
+    # my_ring.extend(range(11,115))
+    # print(my_ring.data)
+    # print(my_ring.cur)
+
+    my_ring.extend(range(115,16000*1000))
+    # print(my_ring.data)
+    # print(my_ring.cur)
+
+    end = time.time()
+
+    print(f'total time execution: {end - start} secs.')
