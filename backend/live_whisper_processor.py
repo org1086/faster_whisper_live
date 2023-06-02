@@ -3,89 +3,59 @@ from faster_whisper import WhisperModel
 from faster_whisper.transcribe import Word, Segment
 from logger import initialize_logger
 import numpy as np
-from typing import NamedTuple, Iterable, List
+from typing import Iterable, List
 import time
+from overide_ring import RingBuffer
 
 logger = initialize_logger(__name__, logging.DEBUG)
 
-class RingBuffer:
-    """ class that implements a not-yet-full buffer """
-    def __init__(self, size_max):
-        self.max = size_max
-        self.data = []
-        self.cur = 0
-
-    class __Full:
-        """ class that implements a full buffer """
-        def append(self, x):
-            """ Append an element overwriting the oldest one. """
-            self.data[self.cur] = x
-            self.cur = (self.cur+1) % self.max
-        def extend(self, xs):
-            """ Extend multiple elements to the ring. """
-
-            # WARN: update current position beforehand
-            # then trace back to update the last update data
-            old_pos = self.cur
-            self.cur = (self.cur + len(xs)) % self.max
-
-            # update data to the ring
-            if len(xs) >= self.max:
-                update_data = xs[-self.max:]
-                self.data[self.cur:] = update_data[:(self.max-self.cur)]
-                self.data[:self.cur] = update_data[(self.max-self.cur):]
-            else:
-                if old_pos + len(xs) <= self.max:
-                    self.data[self.cur:self.cur + len(xs) - 1] = xs
-                else:
-                    self.data[old_pos:] = xs[:self.max - old_pos]
-                    self.data[:old_pos + len(xs) - self.max] = xs[self.max - old_pos:]
-
-        def get(self):
-            """ return list of elements in correct order """
-            return self.data[self.cur:]+self.data[:self.cur]
-
-    def append(self,x):
-        """ Append an element at the end of the buffer. """
-        self.data.append(x)
-        if len(self.data) == self.max:
-            self.cur = 0
-            self.__class__ = self.__Full
-        else: 
-            self.cur +=1
+class MutableWord:
+    def __init__(self, start: float, end: float, word: str, probability: float):
+        self.start = start
+        self.end = end
+        self.word = word
+        self.probability = probability
     
-    def extend(self, xs):
-        """ Extend multiple elements to the buffer. """
-        if self.cur + len(xs) <= self.max:
-            self.data.extend(xs)
-            if len(self.data) == self.max:
-                self.cur = 0
-                self.__class__ = self.__Full
-            else:
-                self.cur += len(xs)
-        else:
-            # TRICK: add 0s to fill the buffer
-            self.data.extend([0.0]*(self.max - self.cur))
+    global to_mutable
+    def to_mutable(word: Word):
+        return MutableWord(word.start, 
+                           word.end, 
+                           word.word, 
+                           word.probability
+                           )
+    def clone(self):
+        return MutableWord(self.start, 
+                           self.end, 
+                           self.word, 
+                           self.probability)
+    
+    def __str__(self) -> str:
+        return f'{{start: {self.start}, end: {self.end}, word: "{self.word}", probability: {self.probability}}}'
 
-            # switch this class to __Full
-            self.__class__ = self.__Full
-            
-            # call extend method of the __Full class
-            self.extend(xs)
+class TranscriptionResult:
+    def __init__(self, last_confirmed: str, validating: str):
+        self.last_confirmed = last_confirmed
+        self.validating = validating
+        
+    def __str__(self) -> str:
+        return f'{self.last_confirmed} >>> {self.validating}'
 
-    def get(self):
-        """ Return a list of elements from the oldest to the newest. """
-        return self.data
-
-class TranscriptionResult(NamedTuple):
-    last_confirmed: str
-    validating: str
-
-class ShiftedWindow(NamedTuple):
-    start: int                      # buffer start position
-    length: int                     # buffer length
-    end: int                        # buffer end position
-    aligned_words: List[Word]       # words with alignment
+class ShiftedWindow:
+    def __init__(self, start: int =0, length: int =0, end: int =0, aligned_words: List[MutableWord]=[]):
+        self.start = start                      # buffer start position
+        self.length = length                    # buffer length
+        self.end = end                          # buffer end position
+        self.aligned_words = aligned_words      # words with alignment
+    
+    def clone(self):
+        return ShiftedWindow(self.start, 
+                             self.length, 
+                             self.end, 
+                             [w.clone() for w in self.aligned_words]
+                             )
+    def __str__(self) -> str:
+        return f'{{start: {self.start}, length: {self.length}, end: {self.end}, aligned_words: {[str(w) for w in self.aligned_words]}}}'
+    
 
 class LiveWhisperProcessorBase:
 
@@ -115,8 +85,6 @@ class LiveWhisperProcessorBase:
     
     def process_new_words(self, **kwargs):
         raise NotImplemented("must be implemented in the child class")
-    
-    
 
 class LiveWhisperProcessor(LiveWhisperProcessorBase):
     def __init__(self, 
@@ -148,8 +116,8 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
 
         self.counter = 0                    # sample counter current sampling time
 
-        self.previous_window = ShiftedWindow(0,0,0)
-        self.current_window = ShiftedWindow(0,0,0)
+        self.previous_window = ShiftedWindow()
+        self.current_window = ShiftedWindow()
 
         self.confirmed_words = []           # array of Word object
         self.validating_words = []          # array of Word object  
@@ -165,34 +133,71 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
                     )
         logger.info(f"Model faster-whisper `{self.model_name}` loaded.")
 
-    def transcribe(self, audio):
+    def transcribe(self, audio)-> TranscriptionResult:
         '''
         Transcribe audio frames using Whisper model.
         - audio: tranformed streaming audio buffer of type of float32-type array.
+        - Return: `TranscriptionResult` with last confirmed text and validating text.
         '''
-        new_audio = np.frombuffer(audio, np.int16).flatten().astype(np.float32) / 32768.0
+        # assign previous window as current window of the previous execution
+        self.previous_window = self.current_window.clone()
 
-        self.previous_window = self.current_window
+        new_audio = np.frombuffer(audio, np.int16).flatten().astype(np.float32) / 32768.0
 
         # push to the overridable buffer of the processor
         self.audio_buffer.extend(new_audio)
         self.counter += len(new_audio)
-        
-        if self.counter <= self.window_samples:
-            self.current_window.start = 0
-            self.current_window.length = self.counter
-            self.current_window.end = self.current_window.start + self.current_window.length
-        else:
-            self.current_window.start = self.counter - self.window_samples
-            self.current_window.length = self.window_samples
-            self.current_window.end = self.current_window.start + self.current_window.length
-        
-        segments, _ = self.model.transcribe(new_audio, language = self.language)
+        audio_from_ring = np.array(self.audio_buffer.get())
 
-        aligned_words = self.align_words(segments, self.current_window.start)
-        self.current_window.aligned_words = aligned_words
+        logger.info(f'new audio length: {len(new_audio)}')
+        logger.info(f'ring buffer data length: {len(self.audio_buffer.data)}')
+        logger.info(f'ring buffer get() data length: {len(self.audio_buffer.get())}')
 
-        return self.process()
+        return TranscriptionResult('','')
+
+        # logger.info(f'audio_from_ring: {audio_from_ring}')
+    
+        # if self.counter <= self.window_samples:
+        #     self.current_window = ShiftedWindow(start = 0, 
+        #                                         length = self.counter, 
+        #                                         end = self.current_window.start + self.current_window.length
+        #                                         )
+        # else:
+        #     self.current_window = ShiftedWindow(start = self.counter - self.window_samples, 
+        #                                         length = self.window_samples, 
+        #                                         end = self.current_window.start + self.current_window.length
+        #                                         )
+        # start = time.time()
+        # segments, _ = self.model.transcribe(audio_from_ring, 
+        #                                     language = self.language,
+        #                                     word_timestamps=True
+        #                                     )
+        # segments = list(segments)
+        # end = time.time()
+
+        # logger.info(f'-------------------------------------------------------')
+        # logger.info(f'>> buffer size from ring: {len(audio_from_ring)}')
+        # logger.info(f'>> actual inference time: {end-start}')
+
+        # # logger.info(f'segments: {list(segments)}')
+
+
+        # start = time.time()
+        # aligned_words = self.align_words(segments, self.current_window.start)
+        # end = time.time()
+
+        # logger.info(f'>> words alignment time: {end-start}')
+
+
+        # # logger.info(f'aligned_words: {[str(w) for w in aligned_words]}')
+        # start = time.time()
+        # self.current_window.aligned_words = aligned_words
+        # # logger.info(f'current_window: {self.current_window}')
+        # end = time.time()
+
+        # logger.info(f'>> `aligned_words to current window` time: {end-start}')
+
+        # return self.process()
 
     def process(self) -> TranscriptionResult:        
         """
@@ -202,29 +207,41 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
         - previous_windos of type `ShiftedWindow`
         - Return: `TranscriptionResult` with last confirmed text and validating text.
         """
-        result = TranscriptionResult()
+
+        start = time.time()
 
         confirmed_words = self.process_confirmed_words()
         overlaping_words = self.process_overlaping_words()
         new_words = self.process_new_words()
 
+        # logger.info(f'confirmed_words: {confirmed_words}')
+        # logger.info(f'overlaping_words: {overlaping_words}')
+        # logger.info(f'new_words: {new_words}')
+
         self.confirmed_words.extend(confirmed_words)
         self.validating_words = overlaping_words
         self.validating_words.extend(new_words)
 
-        result.last_confirmed = ''.join([w.word for w in confirmed_words])
-        result.validating = ''.join([w.word for w in self.validating_words])
+        end = time.time()
 
-        return result
+        logger.info(f'>> processing (+confirmed,overlap,newwords) time: {end - start}')
+
+        # logger.info(f'=> Full text: {"".join([w.word for w in self.confirmed_words])} >>> {"".join([w.word for w in self.validating_words])}')
+
+        return TranscriptionResult(last_confirmed = ''.join([w.word for w in confirmed_words]),
+                                     validating = ''.join([w.word for w in self.validating_words]))
 
     def process_confirmed_words(self) -> List[Word]:
-        if not len(self.previous_window.aligned_words):
-            return []
-        
-        if self.previous_window.start < self.current_window.start:            
+        confirmed_words = []
+
+        # logger.info(f'process_confirmed_words -> previous_window: {self.previous_window}')
+        # logger.info(f'process_confirmed_words -> end_sec: {(self.current_window.start - 1) / self.sample_rate}')
+
+        if len(self.previous_window.aligned_words) and self.previous_window.start < self.current_window.start:            
             end_sec = (self.current_window.start - 1) / self.sample_rate
 
-            confirmed_words = []
+            # logger.info(f'process_confirmed_words.end_sec: {end_sec}')
+            
             for w in self.previous_window.aligned_words:
                 if w.end <= end_sec:
                     confirmed_words.append(w)
@@ -233,9 +250,7 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
                         confirmed_words.append(w)
                 else:
                     break
-
-            return confirmed_words     
-        return []
+        return confirmed_words
 
     def get_window_words(self, start_sec: int, end_sec: int, aligned_words: Iterable[Word]) -> List[Word]:
         window_words = []
@@ -252,38 +267,40 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
         return window_words
     
     def process_overlaping_words(self) -> List[Word]:
-        if not (len(self.previous_window.aligned_words) or len(self.current_window.aligned_words)) :
-            return []
+        overlap_words = []
         
         if self.previous_window.end > self.current_window.start:
             start_sec = self.current_window.start / self.sample_rate
             end_sec = self.previous_window.end / self.sample_rate
-
             overlap_prev_words = self.get_window_words(start_sec, end_sec, self.previous_window.aligned_words)
             overlap_cur_words = self.get_window_words(start_sec, end_sec, self.current_window.aligned_words)
 
-            #TODO: update self.previous_window and self.current_window for successive interation
-
             if not len(overlap_prev_words):
-                return overlap_cur_words
-            if not len(overlap_cur_words):
-                return overlap_prev_words
-
-            prev_words_confidence = sum([w.probability for w in overlap_prev_words])/ len(overlap_prev_words)
-            cur_words_confidence = sum([w.probability for w in overlap_cur_words])/ len(overlap_cur_words)
-            
-            if prev_words_confidence > cur_words_confidence:
-                return overlap_prev_words
+                # nothing to update to current overlaping window, just keep the aligned words as it is.
+                overlap_words = overlap_cur_words
+            elif not len(overlap_cur_words):
+                # prepend overlap_prev_words to current window aligned words
+                # since there're no words within current overlaping window.
+                self.current_window.aligned_words = overlap_prev_words + self.current_window.aligned_words
+                overlap_words = overlap_prev_words
             else:
-                return overlap_cur_words
+                prev_words_confidence = sum([w.probability for w in overlap_prev_words])/ len(overlap_prev_words)
+                cur_words_confidence = sum([w.probability for w in overlap_cur_words])/ len(overlap_cur_words)
                 
-        return []
+                if prev_words_confidence > cur_words_confidence:
+                    # prepend overlap_prev_words to current window aligned words
+                    # since there're no words within current overlaping window.
+                    self.current_window.aligned_words = overlap_prev_words + self.current_window.aligned_words
+                    overlap_words = overlap_prev_words
+                else:
+                    # nothing to update to current overlaping window, just keep the aligned words as it is.
+                    overlap_words = overlap_cur_words 
+        return overlap_words
 
     def process_new_words(self) -> List[Word]:
-        if not len(self.current_window.aligned_words):
-            return []
+        new_words = []
         
-        if self.previous_window.end < self.current_window.end:
+        if len(self.current_window.aligned_words) and self.previous_window.end < self.current_window.end:
             start_sec = (self.previous_window.end + 1) / self.sample_rate
 
             new_words = []
@@ -296,22 +313,38 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
                 else:
                     break
 
-            return list(reversed(new_words))        
-        return []
+        return list(reversed(new_words))
     
-    def shift_word(self, word: Word, shifted_secs: int) -> Word:
+    def shift_word(self, word: MutableWord, shifted_secs: int) -> MutableWord:
         word.start += shifted_secs
         word.end += shifted_secs
         return word
     
-    def align_words(self, segments: Iterable[Segment], start_position: int) -> List[Word]:
-        shifted_secs = start_position / self.sample_rate
-        return [self.shift_word(word, shifted_secs) for segment in segments for word in segment]
+    def align_words(self, segments: Iterable[Segment], start_position: int) -> List[MutableWord]:
+        shifted_words = []
+
+        word_count = 0
+        for segment in segments:
+            if segment.words:
+                for word in segment.words:
+                    word_count +=1
+        logger.info(f'>> word count: {word_count}')
+
+        shifted_secs = start_position / self.sample_rate     
+        for segment in segments:
+            if segment.words:
+                shifted_words.extend([self.shift_word(to_mutable(word), shifted_secs) for word in segment.words])
+        return shifted_words
 
 if __name__ == "__main__":
     my_ring = RingBuffer(160000)
 
-    start = time.time()
+    my_window = ShiftedWindow(0,0,0,[])
+
+    print(my_window)
+    
+
+    # start = time.time()
 
     # print(my_ring.data)
     # print(my_ring.cur)
@@ -336,10 +369,10 @@ if __name__ == "__main__":
     # print(my_ring.data)
     # print(my_ring.cur)
 
-    my_ring.extend(range(115,16000*1000))
+    # my_ring.extend(range(115,16000*1000))
     # print(my_ring.data)
     # print(my_ring.cur)
 
-    end = time.time()
+    # end = time.time()
 
-    print(f'total time execution: {end - start} secs.')
+    # print(f'total time execution: {end - start} secs.')

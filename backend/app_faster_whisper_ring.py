@@ -89,7 +89,7 @@ processor_thread = None
 LANGUAGE = os.getenv('LANGUAGE') if os.getenv('LANGUAGES') else "vi"
 
 # Get environment variables
-WHISPER_MODEL_NAME = os.getenv('WHISPER_MODEL_NAME') if os.getenv('WHISPER_MODEL_NAME') else "medium"
+WHISPER_MODEL_NAME = os.getenv('WHISPER_MODEL_NAME') if os.getenv('WHISPER_MODEL_NAME') else "tiny"
 DEVICE = os.getenv("DEVICE") if os.getenv("DEVICE") else "cpu"
 COMPUTE_TYPE = os.getenv("COMPUTE_TYPE") if os.getenv("COMPUTE_TYPE") else "auto"
 
@@ -107,17 +107,18 @@ logger.info(f">>> compute_type={COMPUTE_TYPE}")
 #         )
 # logger.info(f"Model faster-whisper `{WHISPER_MODEL_NAME}` loaded.")
 
-processcor = LiveWhisperProcessor(model_name=WHISPER_MODEL_NAME, language=LANGUAGE, device=DEVICE, compute_type=COMPUTE_TYPE, \
+processor = LiveWhisperProcessor(model_name=WHISPER_MODEL_NAME, language=LANGUAGE, device=DEVICE, compute_type=COMPUTE_TYPE, \
                                   download_root="models/", local_files_only=True)
 #-------------------------------------------------------------------------------
 
 #------------------------Main processing functions------------------------------
 # sampling_count = 0
-def whisper_transribe(audio, shifted_samples: int, isFake: bool = False) -> str:
+def whisper_transribe(processor: LiveWhisperProcessor, audio: np.array, isFake: bool = False) -> TranscriptionResult:
     '''
     Transcribe audio frames using Whisper model.
     - audio: tranformed streaming audio buffer of type of float32-type array.
     - isFake: fake transcription with random return value and time of execution.
+    - Return: `TranscriptionResult` with `last_confirmed` and `validating` text.
     '''
     # global sampling_count
     # sampling_count += 1    
@@ -141,12 +142,12 @@ def whisper_transribe(audio, shifted_samples: int, isFake: bool = False) -> str:
         return TranscriptionResult(''.join([lorem.words(random.randrange(2, 7)), ' ']), \
                                    ''.join([lorem.words(random.randrange(7, 15)), ' ']))
     
-    logger.info(f"-> sample length={len(audio)/(2*SAMPLE_RATE)} in second.")
-    last_confirmed_text, validating_text = processcor.transcribe(audio)
+    # logger.info(f"-> sample length={len(audio)/(2*SAMPLE_RATE)} in second.")
+    result = processor.transcribe(audio)
 
-    return TranscriptionResult(last_confirmed_text, validating_text)
+    return TranscriptionResult(result.last_confirmed, result.validating)
 
-def whisper_processing(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer):   
+def whisper_processing(processor: LiveWhisperProcessor, ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer):   
     global is_streaming
 
     logger.info('START processing audio data from ringbuffer ...')
@@ -182,10 +183,10 @@ def whisper_processing(ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer)
 
             start = time.perf_counter()
             # transcribe with faster-whisper model
-            text = whisper_transribe(accumulated_bytes, isFake=False)
+            text = whisper_transribe(processor, accumulated_bytes, isFake=False)
             stop = time.perf_counter()
-            logger.info(f"-> inference time: {stop - start}")
-            logger.info(f"-> transcription={text}")
+            logger.info(f"-> total time (+alignment): {stop - start}")
+            # logger.info(f"-> transcription={text.last_confirmed} >>> {text.validating}")
 
             # clear the accumulated buffer
             accumulated_bytes = np.array([], np.byte)
@@ -244,7 +245,7 @@ def connected():
 start_audio_transfer = time.time()
 @socketio.on('start')
 def start():
-    global ring, processor_thread, is_streaming, f_logs
+    global ring, processor_thread, is_streaming, f_logs, processor
     # global start_audio_transfer
     
     f_logs = open('processing_logs.txt', 'w')
@@ -256,7 +257,7 @@ def start():
 
     if not processor_thread:
         # init processing thread
-        processor_thread = threading.Thread(target=whisper_processing, args=(ring, ring.new_reader()))
+        processor_thread = threading.Thread(target=whisper_processing, args=(processor, ring, ring.new_reader()))
         logger.info(f'>>> initialized processing thread {processor_thread}')
         processor_thread.start()
         # processor_thread.join()
