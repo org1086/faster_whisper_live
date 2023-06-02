@@ -5,7 +5,7 @@ from logger import initialize_logger
 import numpy as np
 from typing import Iterable, List
 import time
-from backend.override_ring import RingBuffer
+from override_ring import RingBuffer
 
 logger = initialize_logger(__name__, logging.DEBUG)
 

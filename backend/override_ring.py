@@ -20,16 +20,16 @@ class RingBuffer:
             self.cur = (self.cur + len(xs)) % self.max
 
             # update data to the ring
-            if len(xs) >= self.max:
-                update_data = xs[-self.max:]
-                self.data[self.cur:] = update_data[:(self.max-self.cur)]
-                self.data[:self.cur] = update_data[(self.max-self.cur):]
-            else:
+            if len(xs) < self.max:
                 if old_pos + len(xs) <= self.max:
                     self.data[old_pos:old_pos + len(xs)] = xs
                 else:
                     self.data[old_pos:] = xs[:self.max - old_pos]
                     self.data[:old_pos + len(xs) - self.max] = xs[self.max - old_pos:]
+            else:
+                update_data = xs[-self.max:]
+                self.data[self.cur:] = update_data[:(self.max-self.cur)]
+                self.data[:self.cur] = update_data[(self.max-self.cur):]
 
         def get(self):
             """ return list of elements in correct order """
