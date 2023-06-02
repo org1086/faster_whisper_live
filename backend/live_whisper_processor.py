@@ -5,7 +5,7 @@ from logger import initialize_logger
 import numpy as np
 from typing import Iterable, List
 import time
-from overide_ring import RingBuffer
+from backend.override_ring import RingBuffer
 
 logger = initialize_logger(__name__, logging.DEBUG)
 
@@ -342,37 +342,3 @@ if __name__ == "__main__":
     my_window = ShiftedWindow(0,0,0,[])
 
     print(my_window)
-    
-
-    # start = time.time()
-
-    # print(my_ring.data)
-    # print(my_ring.cur)
-
-    # my_ring.append(1)
-    # print(my_ring.data)
-    # print(my_ring.cur)
-
-    # my_ring.extend(range(2,5))
-    # print(my_ring.data)
-    # print(my_ring.cur)
-
-    # my_ring.append(5)
-    # print(my_ring.data)
-    # print(my_ring.cur)
-
-    # my_ring.extend(range(6,11))
-    # print(my_ring.data)
-    # print(my_ring.cur)
-
-    # my_ring.extend(range(11,115))
-    # print(my_ring.data)
-    # print(my_ring.cur)
-
-    # my_ring.extend(range(115,16000*1000))
-    # print(my_ring.data)
-    # print(my_ring.cur)
-
-    # end = time.time()
-
-    # print(f'total time execution: {end - start} secs.')

@@ -26,7 +26,7 @@ class RingBuffer:
                 self.data[:self.cur] = update_data[(self.max-self.cur):]
             else:
                 if old_pos + len(xs) <= self.max:
-                    self.data[self.cur:self.cur + len(xs) - 1] = xs
+                    self.data[old_pos:old_pos + len(xs)] = xs
                 else:
                     self.data[old_pos:] = xs[:self.max - old_pos]
                     self.data[:old_pos + len(xs) - self.max] = xs[self.max - old_pos:]
@@ -77,33 +77,17 @@ if __name__ == "__main__":
     my_ring = RingBuffer(160000)    
 
     # start = time.time()
-
-    my_ring.extend(range(0,147456))
+    init_sample = 147456
+    my_ring.extend(range(0,init_sample))
     print_test(my_ring)
 
+    new_size = 24576
     print('----------------------------------------------')
-    print(f'new audio size: 24576')
+    print(f'new audio size: {new_size}')
 
-    my_ring.extend(range(147456,147456 + 24576))
-    print_test(my_ring)
-    
-    my_ring.extend(range(147456 + 24576,147456 + 2*24576))
-    print_test(my_ring)
-
-    my_ring.extend(range(147456 + 2*24576,147456 + 3*24576))
-    print_test(my_ring)
-
-    my_ring.extend(range(147456 + 3*24576,147456 + 4*24576))
-    print_test(my_ring)
-
-    my_ring.extend(range(147456 + 4*24576,147456 + 5*24576))
-    print_test(my_ring)
-
-    my_ring.extend(range(147456 + 5*24576,147456 + 6*24576))
-    print_test(my_ring)
-
-    my_ring.extend(range(147456 + 6*24576,147456 +7*24576))
-    print_test(my_ring)
+    for i in range(1000):
+        my_ring.extend(range(init_sample + i*new_size,147456 + (i+1)*new_size))
+        print_test(my_ring)
 
     # end = time.time()
     # print(f'total time execution: {end - start} secs.')
