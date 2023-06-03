@@ -58,8 +58,8 @@ let AudioStreamer = {
     // Speech data response
     if (onData) {
       socket.on('speechData', (response) => {
-        //console.log('speech data received from server!')
-        onData(response.data, response.isMove2NextChunk, response.isPhraseComplete, response.isFinal);
+        console.log('speech data received from server!')
+        onData(response.confirmed, response.validating);
       });
     }
 

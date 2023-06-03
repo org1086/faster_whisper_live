@@ -149,55 +149,58 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
         self.counter += len(new_audio)
         audio_from_ring = np.array(self.audio_buffer.get())
 
-        logger.info(f'new audio length: {len(new_audio)}')
-        logger.info(f'ring buffer data length: {len(self.audio_buffer.data)}')
-        logger.info(f'ring buffer get() data length: {len(self.audio_buffer.get())}')
-
-        return TranscriptionResult('','')
+        # BEGIN TEST `override ring buffer` correctness
+        # logger.info(f'new audio length: {len(new_audio)}')
+        # logger.info(f'ring buffer data length: {len(self.audio_buffer.data)}')
+        # logger.info(f'ring buffer get() data length: {len(self.audio_buffer.get())}')
+        # return TranscriptionResult('','')
+        # END TEST
 
         # logger.info(f'audio_from_ring: {audio_from_ring}')
     
-        # if self.counter <= self.window_samples:
-        #     self.current_window = ShiftedWindow(start = 0, 
-        #                                         length = self.counter, 
-        #                                         end = self.current_window.start + self.current_window.length
-        #                                         )
-        # else:
-        #     self.current_window = ShiftedWindow(start = self.counter - self.window_samples, 
-        #                                         length = self.window_samples, 
-        #                                         end = self.current_window.start + self.current_window.length
-        #                                         )
-        # start = time.time()
-        # segments, _ = self.model.transcribe(audio_from_ring, 
-        #                                     language = self.language,
-        #                                     word_timestamps=True
-        #                                     )
-        # segments = list(segments)
-        # end = time.time()
+        if self.counter <= self.window_samples:
+            self.current_window = ShiftedWindow(start = 0, 
+                                                length = self.counter, 
+                                                end = self.current_window.start + self.current_window.length
+                                                )
+        else:
+            self.current_window = ShiftedWindow(start = self.counter - self.window_samples, 
+                                                length = self.window_samples, 
+                                                end = self.current_window.start + self.current_window.length
+                                                )
+        start = time.time()
+        segments, _ = self.model.transcribe(audio_from_ring, 
+                                            language = self.language,
+                                            word_timestamps=True
+                                            )
+        segments = list(segments)       # convert segment iterator to list
+        end = time.time()
 
-        # logger.info(f'-------------------------------------------------------')
-        # logger.info(f'>> buffer size from ring: {len(audio_from_ring)}')
-        # logger.info(f'>> actual inference time: {end-start}')
+        logger.info(f'-------------------------------------------------------')
+        logger.info(f'>> buffer size from ring: {len(audio_from_ring)}')
+        logger.info(f'>> actual inference time: {end-start}')
 
-        # # logger.info(f'segments: {list(segments)}')
+        # logger.info(f'segments: {segments}')
+
+        start = time.time()
+        aligned_words = self.align_words(segments, self.current_window.start)
+        end = time.time()
+
+        logger.info(f'>> words alignment time: {end-start}')
 
 
-        # start = time.time()
-        # aligned_words = self.align_words(segments, self.current_window.start)
-        # end = time.time()
+        # logger.info(f'aligned_words: {[str(w) for w in aligned_words]}')
+        start = time.time()
+        self.current_window.aligned_words = aligned_words
+        # logger.info(f'current_window: {self.current_window}')
+        end = time.time()
 
-        # logger.info(f'>> words alignment time: {end-start}')
+        logger.info(f'>> `aligned_words to current window` time: {end-start}')
 
+        # logger.info(f'previous window aligned words: {[str(w) for w in self.previous_window.aligned_words]}')
+        # logger.info(f'current window aligned words: {[str(w) for w in self.current_window.aligned_words]}')
 
-        # # logger.info(f'aligned_words: {[str(w) for w in aligned_words]}')
-        # start = time.time()
-        # self.current_window.aligned_words = aligned_words
-        # # logger.info(f'current_window: {self.current_window}')
-        # end = time.time()
-
-        # logger.info(f'>> `aligned_words to current window` time: {end-start}')
-
-        # return self.process()
+        return self.process()
 
     def process(self) -> TranscriptionResult:        
         """

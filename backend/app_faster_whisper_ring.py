@@ -9,16 +9,13 @@ import numpy as np
 import logging
 import warnings
 import threading
-from time import sleep
-from datetime import datetime, timedelta
+import eventlet
 from flask import Flask, request
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
 from engineio.payload import Payload
 from lorem_text import lorem
 
-import whisper
-from faster_whisper import WhisperModel
 from ringbuffer import ringbuffer
 from live_whisper_processor import LiveWhisperProcessor, TranscriptionResult
 from logger import initialize_logger
@@ -48,8 +45,9 @@ app.config['SECRET_KEY'] = 'secret!'
 CORS(app, resources={r"/*": {"origins": "*"}})
 warnings.filterwarnings("ignore")
 
-async_mode = 'eventlet'
-socketio = SocketIO(app, cors_allowed_origins="*", async_mode=async_mode)
+socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
+# this patch is to fix emitting socket event from child thread
+eventlet.monkey_patch()
 
 # min buffer length of interest
 MIN_CHUNK_SIZE = 480                    # in bytes
@@ -89,7 +87,7 @@ processor_thread = None
 LANGUAGE = os.getenv('LANGUAGE') if os.getenv('LANGUAGES') else "vi"
 
 # Get environment variables
-WHISPER_MODEL_NAME = os.getenv('WHISPER_MODEL_NAME') if os.getenv('WHISPER_MODEL_NAME') else "tiny"
+WHISPER_MODEL_NAME = os.getenv('WHISPER_MODEL_NAME') if os.getenv('WHISPER_MODEL_NAME') else "medium"
 DEVICE = os.getenv("DEVICE") if os.getenv("DEVICE") else "cpu"
 COMPUTE_TYPE = os.getenv("COMPUTE_TYPE") if os.getenv("COMPUTE_TYPE") else "auto"
 
@@ -147,7 +145,7 @@ def whisper_transribe(processor: LiveWhisperProcessor, audio: np.array, isFake: 
 
     return TranscriptionResult(result.last_confirmed, result.validating)
 
-def whisper_processing(processor: LiveWhisperProcessor, ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer):   
+def whisper_processing(processor: LiveWhisperProcessor, ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer, socketio: SocketIO):   
     global is_streaming
 
     logger.info('START processing audio data from ringbuffer ...')
@@ -186,8 +184,9 @@ def whisper_processing(processor: LiveWhisperProcessor, ring: ringbuffer.RingBuf
             text = whisper_transribe(processor, accumulated_bytes, isFake=False)
             stop = time.perf_counter()
             logger.info(f"-> total time (+alignment): {stop - start}")
-            # logger.info(f"-> transcription={text.last_confirmed} >>> {text.validating}")
-
+            logger.info(f"-> transcription={text.last_confirmed} >>> {text.validating}")
+            socketio.emit('speechData', {'confirmed': text.last_confirmed, 'validating': text.validating})
+            
             # clear the accumulated buffer
             accumulated_bytes = np.array([], np.byte)
             # time.sleep(random.randint(1,4)/200)
@@ -217,6 +216,10 @@ def stream(message):
     # to zero, and then this assignment overwrites the data-sized part.
     record.data[:msg_length] = message["chunk"]
 
+    # BEGIN TEST send back data to client
+    # emit('speechData', {'confirmed': "test confirmed", 'validating': "test validating"})
+    # END TEST
+
     try:
         ring.try_write(record)
         # logger.info('%d samples are written to the ring!' % len(audio))
@@ -245,7 +248,7 @@ def connected():
 start_audio_transfer = time.time()
 @socketio.on('start')
 def start():
-    global ring, processor_thread, is_streaming, f_logs, processor
+    global ring, processor_thread, is_streaming, f_logs, processor, socketio
     # global start_audio_transfer
     
     f_logs = open('processing_logs.txt', 'w')
@@ -257,7 +260,7 @@ def start():
 
     if not processor_thread:
         # init processing thread
-        processor_thread = threading.Thread(target=whisper_processing, args=(processor, ring, ring.new_reader()))
+        processor_thread = threading.Thread(target=whisper_processing, args=(processor, ring, ring.new_reader(), socketio))
         logger.info(f'>>> initialized processing thread {processor_thread}')
         processor_thread.start()
         # processor_thread.join()
