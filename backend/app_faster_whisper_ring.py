@@ -10,6 +10,7 @@ import logging
 import warnings
 import threading
 import eventlet
+from threading import Lock
 from flask import Flask, request
 from flask_cors import CORS
 from flask_socketio import SocketIO, emit
@@ -47,7 +48,8 @@ warnings.filterwarnings("ignore")
 
 socketio = SocketIO(app, cors_allowed_origins="*", async_mode='eventlet')
 # this patch is to fix emitting socket event from child thread
-eventlet.monkey_patch()
+# remove it since it cause audio streaming very slow (lost audio package)
+# eventlet.monkey_patch()
 
 # min buffer length of interest
 MIN_CHUNK_SIZE = 480                    # in bytes
@@ -79,6 +81,7 @@ ring = ringbuffer.RingBuffer(slot_bytes=SLOT_BYTES+STRUCT_KEYS_SIZE, slot_count=
 ring.new_writer()
 
 # thread for processing audio stream
+processor_thread_lock = Lock()
 processor_thread = None
 #-------------------------------------------------------------------------------
 
@@ -87,7 +90,7 @@ processor_thread = None
 LANGUAGE = os.getenv('LANGUAGE') if os.getenv('LANGUAGES') else "vi"
 
 # Get environment variables
-WHISPER_MODEL_NAME = os.getenv('WHISPER_MODEL_NAME') if os.getenv('WHISPER_MODEL_NAME') else "medium"
+WHISPER_MODEL_NAME = os.getenv('WHISPER_MODEL_NAME') if os.getenv('WHISPER_MODEL_NAME') else "tiny"
 DEVICE = os.getenv("DEVICE") if os.getenv("DEVICE") else "cpu"
 COMPUTE_TYPE = os.getenv("COMPUTE_TYPE") if os.getenv("COMPUTE_TYPE") else "auto"
 
@@ -136,7 +139,7 @@ def whisper_transribe(processor: LiveWhisperProcessor, audio: np.array, isFake: 
     # ============================== END of the test ===================================
 
     if isFake:
-        time.sleep(random.randrange(6,12)/2.0)
+        time.sleep(random.randrange(1,2)/20)
         return TranscriptionResult(''.join([lorem.words(random.randrange(2, 7)), ' ']), \
                                    ''.join([lorem.words(random.randrange(7, 15)), ' ']))
     
@@ -145,13 +148,18 @@ def whisper_transribe(processor: LiveWhisperProcessor, audio: np.array, isFake: 
 
     return TranscriptionResult(result.last_confirmed, result.validating)
 
-def whisper_processing(processor: LiveWhisperProcessor, ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer, socketio: SocketIO):   
+def emit_result(confirmed: str, validating: str):
+    socketio.sleep(0.06) # a must for this socket event to be fired
+    socketio.emit('speechData', {'confirmed': confirmed, 'validating': validating})
+
+def whisper_processing(processor: LiveWhisperProcessor, ring: ringbuffer.RingBuffer, pointer: ringbuffer.Pointer):   
     global is_streaming
 
     logger.info('START processing audio data from ringbuffer ...')
     accumulated_bytes = np.array([], np.byte)
     while True:
-        try:
+        try:      
+            socketio.sleep(0.06)    
             # logger.info(f'writer index: {ring.writer.get().index}, \
             #       writer generation: {ring.writer.get().generation}')
             
@@ -159,7 +167,7 @@ def whisper_processing(processor: LiveWhisperProcessor, ring: ringbuffer.RingBuf
             cur_writer_counter = ring.writer.get().counter
             cur_reader_counter = pointer.counter.value
             if cur_writer_counter - cur_reader_counter < MIN_SLOTS:
-                time.sleep(0.05)
+                socketio.sleep(0.06)
                 continue
             # if cur_writer_counter - cur_reader_counter <=0: continue
             
@@ -185,12 +193,13 @@ def whisper_processing(processor: LiveWhisperProcessor, ring: ringbuffer.RingBuf
             stop = time.perf_counter()
             logger.info(f"-> total time (+alignment): {stop - start}")
             logger.info(f"-> transcription={text.last_confirmed} >>> {text.validating}")
-            socketio.emit('speechData', {'confirmed': text.last_confirmed, 'validating': text.validating})
             
+            emit_result(text.last_confirmed, text.validating)
+
             # clear the accumulated buffer
             accumulated_bytes = np.array([], np.byte)
-            # time.sleep(random.randint(1,4)/200)
-            # burn_cpu(1000*random.randint(1,4)/0.5)
+            # socketio.sleep(random.randint(1,4)/200)
+            # burn_cpu(1000*random.randint(1,8)/0.5)
 
         except ringbuffer.WriterFinishedError:
             return
@@ -198,8 +207,8 @@ def whisper_processing(processor: LiveWhisperProcessor, ring: ringbuffer.RingBuf
 packages_to_ring_count = 0 
 @socketio.on('binaryAudioData')
 def stream(message):
-    global ring, is_streaming 
-    # global packages_to_ring_count, start_audio_transfer, stop_audio_transfer
+    global ring, is_streaming
+    global packages_to_ring_count, start_audio_transfer, stop_audio_transfer
 
     if not is_streaming: return
 
@@ -225,15 +234,15 @@ def stream(message):
         # logger.info('%d samples are written to the ring!' % len(audio))
 
         # BEGIN TEST `stream audio to ring` performance with/without heavy CPU computation
-        # packages_to_ring_count +=1
-        # if not packages_to_ring_count % 100: 
-        #     stop_audio_transfer = time.time()
-        #     logger.info(f'packages to ring: {packages_to_ring_count}')
-        #     logger.info(f'total time the pushing 100 packages to ring: {stop_audio_transfer - start_audio_transfer}')
+        packages_to_ring_count +=1
+        if not packages_to_ring_count % 100: 
+            stop_audio_transfer = time.time()
+            logger.info(f'packages to ring: {packages_to_ring_count}')
+            logger.info(f'total time the pushing 100 packages to ring: {stop_audio_transfer - start_audio_transfer}')
             
-        #     with open("test_ring_in_perf_light_cpu_computation.txt", "w") as f:
-        #         f.write(f'total time the pushing 200 packages to ring: {stop_audio_transfer - start_audio_transfer}\n')
-        #     start_audio_transfer = stop_audio_transfer 
+            with open("test_ring_in_perf_light_cpu_computation.txt", "w") as f:
+                f.write(f'total time the pushing 200 packages to ring: {stop_audio_transfer - start_audio_transfer}\n')
+            start_audio_transfer = stop_audio_transfer 
         # END OF TEST           
 
     except ringbuffer.WaitingForReaderError:
@@ -248,30 +257,34 @@ def connected():
 start_audio_transfer = time.time()
 @socketio.on('start')
 def start():
-    global ring, processor_thread, is_streaming, f_logs, processor, socketio
-    # global start_audio_transfer
+    global ring, processor_thread_lock, processor_thread, is_streaming, f_logs, processor, socketio
+    global start_audio_transfer
     
     f_logs = open('processing_logs.txt', 'w')
 
     logger.info('>>> on_start event from client fired!')
     is_streaming = True
 
-    # start_audio_transfer = time.time()
+    start_audio_transfer = time.time()
 
-    if not processor_thread:
-        # init processing thread
-        processor_thread = threading.Thread(target=whisper_processing, args=(processor, ring, ring.new_reader(), socketio))
-        logger.info(f'>>> initialized processing thread {processor_thread}')
-        processor_thread.start()
-        # processor_thread.join()
-    else:
-        logger.info(f'>>> existing processor_thread: {processor_thread}')
-        logger.info(f'>>> existing processor_thread.is_alive: {processor_thread.is_alive()}')
+    # global thread
+    # thread = socketio.start_background_task(background_thread)
 
-        if not processor_thread.is_alive():
-            processor_thread.start()
-            logger.info(f'>>> started existing processor_thread: {processor_thread}')
+    with processor_thread_lock:
+        if not processor_thread:
+            # init processing thread
+            processor_thread = socketio.start_background_task(whisper_processing, processor, ring, ring.new_reader())
+            logger.info(f'>>> initialized processing thread {processor_thread}')
+            # processor_thread.start()
             # processor_thread.join()
+        else:
+            logger.info(f'>>> existing processor_thread: {processor_thread}')
+            logger.info(f'>>> existing processor_thread.is_alive: {processor_thread.is_alive()}')
+
+            if not processor_thread.is_alive():
+                processor_thread.start()
+                logger.info(f'>>> started existing processor_thread: {processor_thread}')
+                # processor_thread.join()
 
 @socketio.on('stop')
 def stop():
