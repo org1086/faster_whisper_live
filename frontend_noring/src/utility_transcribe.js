@@ -1,6 +1,6 @@
 import io from 'socket.io-client';
 
-// const socket = new io.connect("http://98.153.103.177:51003/");
+// const socket = new io.connect("http://178.55.113.73:8271/");
 const socket = new io.connect("http://localhost:5000/");
 
 // Connect status
@@ -59,7 +59,7 @@ let AudioStreamer = {
     if (onData) {
       socket.on('speechData', (response) => {
         console.log('speech data received from server!')
-        onData(response.confirmed, response.validating);
+        onData(response.data, response.isMove2NextChunk, response.isPhraseComplete);
       });
     }
 
