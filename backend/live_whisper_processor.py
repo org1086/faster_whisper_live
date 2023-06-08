@@ -149,8 +149,9 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
 
         new_audio = np.frombuffer(audio, np.int16).flatten().astype(np.float32) / 32768.0
 
+        # temp log for investigation
         file_logger.info('==========================================================')
-        file_logger.info(f"new audio size: {len(new_audio)} samples of float type.")
+        file_logger.info(f">>>>> new audio size: {len(new_audio)} samples of float type.")
 
         # push to the overridable buffer of the processor
         self.audio_buffer.extend(new_audio)
@@ -205,6 +206,10 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
 
         logger.info(f'>> `aligned_words to current window` time: {end-start}')
 
+        # temp log for investigation
+        file_logger.info(f">>>>> previous window timestamp range (sec): [{self.previous_window.start/self.sample_rate:.2f} - {self.previous_window.end/self.sample_rate:.2f}]")
+        file_logger.info(f">>>>> current window timestamp range (sec): [{self.current_window.start/self.sample_rate:.2f} - {self.current_window.end/self.sample_rate:.2f}]")
+
         # logger.info(f'previous window aligned words: {[str(w) for w in self.previous_window.aligned_words]}')
         # logger.info(f'current window aligned words: {[str(w) for w in self.current_window.aligned_words]}')
 
@@ -222,20 +227,20 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
         start = time.time()
 
         # logging previous and current windows with timestamped words for investigation
-        file_logger.info("previous window's timestamped words:")
+        file_logger.info(">>>>> previous window's timestamped words:")
         file_logger.info(self.format_timestamped_words_as_str(self.previous_window.aligned_words))
-        file_logger.info("current window's timestamped words:")
+        file_logger.info(">>>>> current window's timestamped words:")
         file_logger.info(self.format_timestamped_words_as_str(self.current_window.aligned_words))
 
         confirmed_words = self.process_confirmed_words()
         overlaping_words = self.process_overlaping_words()
         new_words = self.process_new_words()
 
-        file_logger.info('confirmed words:')
+        file_logger.info('>>>>> confirmed words:')
         file_logger.info(self.format_timestamped_words_as_str(confirmed_words))
-        file_logger.info('overlaping words:')
+        file_logger.info('>>>>> overlaping words:')
         file_logger.info(self.format_timestamped_words_as_str(overlaping_words))
-        file_logger.info('new words:')
+        file_logger.info('>>>>> new words:')
         file_logger.info(self.format_timestamped_words_as_str(new_words))
 
         # logger.info(f'confirmed_words: {confirmed_words}')
@@ -263,6 +268,9 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
 
         if len(self.previous_window.aligned_words) and self.previous_window.start < self.current_window.start:            
             end_sec = (self.current_window.start - 1) / self.sample_rate
+
+            # temp log for investigation
+            file_logger.info(f">>>>> confirmed window timestamp range (sec): [{self.previous_window.start/self.sample_rate:.2f} - {end_sec:.2f}]")
 
             # logger.info(f'process_confirmed_words.end_sec: {end_sec}')
             
@@ -299,6 +307,9 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
             overlap_prev_words = self.get_window_words(start_sec, end_sec, self.previous_window.aligned_words)
             overlap_cur_words = self.get_window_words(start_sec, end_sec, self.current_window.aligned_words)
 
+            # temp log for investigation
+            file_logger.info(f">>>>> overlapping window timestamp range (sec): [{start_sec:.2f} - {end_sec:.2f}]")
+
             if not len(overlap_prev_words):
                 # nothing to update to current overlaping window, just keep the aligned words as it is.
                 overlap_words = overlap_cur_words
@@ -326,6 +337,9 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
         
         if len(self.current_window.aligned_words) and self.previous_window.end < self.current_window.end:
             start_sec = (self.previous_window.end + 1) / self.sample_rate
+
+            # temp log for investigation
+            file_logger.info(f">>>>> new window timestamp range (sec): [{start_sec:.2f} - {self.current_window.end/self.sample_rate:.2f}]")
 
             new_words = []
             for w in reversed(self.current_window.aligned_words):
@@ -363,7 +377,7 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
     def format_timestamped_words_as_str(self, words: List[MutableWord]):
         printed_str = ''
         for w in words:
-            printed_str += f'[{w.start:.1f} {w.word.strip()} (p={w.probability:.2f}) {w.end:.1f}] '
+            printed_str += f'[{w.start:.2f} {w.word.strip()} (p={w.probability:.2f}) {w.end:.2f}] '
         return printed_str.rstrip()
 
 if __name__ == "__main__":
