@@ -170,12 +170,12 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
         if self.counter <= self.window_samples:
             self.current_window = ShiftedWindow(start = 0, 
                                                 length = self.counter, 
-                                                end = self.current_window.start + self.current_window.length
+                                                end = self.counter - 1
                                                 )
         else:
             self.current_window = ShiftedWindow(start = self.counter - self.window_samples, 
                                                 length = self.window_samples, 
-                                                end = self.current_window.start + self.current_window.length
+                                                end = self.counter - 1
                                                 )
         start = time.time()
         segments, _ = self.model.transcribe(audio_from_ring, 
@@ -377,7 +377,7 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
     def format_timestamped_words_as_str(self, words: List[MutableWord]):
         printed_str = ''
         for w in words:
-            printed_str += f'[{w.start:.2f} {w.word.strip()} (p={w.probability:.2f}) {w.end:.2f}] '
+            printed_str += f'[{w.start:.2f} {w.word.strip()} ({100*w.probability:.1f}%) {w.end:.2f}] '
         return printed_str.rstrip()
 
 if __name__ == "__main__":
