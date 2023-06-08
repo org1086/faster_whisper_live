@@ -363,7 +363,7 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
     def format_timestamped_words_as_str(self, words: List[MutableWord]):
         printed_str = ''
         for w in words:
-            printed_str += f'[{w.start:.4f} {w.word.strip()} {w.end:.4f}] '
+            printed_str += f'[{w.start:.1f} {w.word.strip()} (p={w.probability:.2f}) {w.end:.1f}] '
         return printed_str.rstrip()
 
 if __name__ == "__main__":
