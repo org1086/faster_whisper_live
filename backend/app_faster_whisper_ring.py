@@ -93,6 +93,7 @@ LANGUAGE = os.getenv('LANGUAGE') if os.getenv('LANGUAGES') else "vi"
 WHISPER_MODEL_NAME = os.getenv('WHISPER_MODEL_NAME') if os.getenv('WHISPER_MODEL_NAME') else "tiny"
 DEVICE = os.getenv("DEVICE") if os.getenv("DEVICE") else "cpu"
 COMPUTE_TYPE = os.getenv("COMPUTE_TYPE") if os.getenv("COMPUTE_TYPE") else "auto"
+INTERSECTION_THRESH = float(os.getenv("INTERSECTION_THRESH")) if os.getenv("INTERSECTION_THRESH") else 0.6
 
 logger.info(">>> Loading the Faster-Whisper model...")
 logger.info(f">>> model_name={WHISPER_MODEL_NAME}")
@@ -108,8 +109,14 @@ logger.info(f">>> compute_type={COMPUTE_TYPE}")
 #         )
 # logger.info(f"Model faster-whisper `{WHISPER_MODEL_NAME}` loaded.")
 
-processor = LiveWhisperProcessor(model_name=WHISPER_MODEL_NAME, language=LANGUAGE, device=DEVICE, compute_type=COMPUTE_TYPE, \
-                                  download_root="models/", local_files_only=True)
+processor = LiveWhisperProcessor(model_name=WHISPER_MODEL_NAME, 
+                                 language=LANGUAGE, 
+                                 device=DEVICE, 
+                                 compute_type=COMPUTE_TYPE,
+                                 download_root="models/", 
+                                 local_files_only=True,
+                                 intersection_thresh=INTERSECTION_THRESH
+                                 )
 #-------------------------------------------------------------------------------
 
 #------------------------Main processing functions------------------------------

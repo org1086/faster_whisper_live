@@ -1,13 +1,14 @@
 import logging
 from faster_whisper import WhisperModel
 from faster_whisper.transcribe import Word, Segment
-from logger import initialize_logger
+from logger import initialize_logger, initialize_file_logger
 import numpy as np
 from typing import Iterable, List
 import time
 from override_ring import RingBuffer
 
 logger = initialize_logger(__name__, logging.DEBUG)
+file_logger = initialize_file_logger(__name__, logging.DEBUG)
 
 class MutableWord:
     def __init__(self, start: float, end: float, word: str, probability: float):
@@ -85,6 +86,10 @@ class LiveWhisperProcessorBase:
     
     def process_new_words(self, **kwargs):
         raise NotImplemented("must be implemented in the child class")
+    
+    def format_timestamped_words_as_str(self, **kwargs):
+        raise NotImplemented("must be implemented in the child class")
+
 
 class LiveWhisperProcessor(LiveWhisperProcessorBase):
     def __init__(self, 
@@ -213,9 +218,23 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
 
         start = time.time()
 
+        # logging previous and current windows with timestamped words for investigation
+        file_logger.info('==========================================================')
+        file_logger.info("previous window's timestamped words:")
+        file_logger.info(self.format_timestamped_words_as_str(self.previous_window.aligned_words))
+        file_logger.info("current window's timestamped words:")
+        file_logger.info(self.format_timestamped_words_as_str(self.current_window.aligned_words))
+
         confirmed_words = self.process_confirmed_words()
         overlaping_words = self.process_overlaping_words()
         new_words = self.process_new_words()
+
+        file_logger.info('confirmed words:')
+        file_logger.info(self.format_timestamped_words_as_str(confirmed_words))
+        file_logger.info('overlaping words:')
+        file_logger.info(self.format_timestamped_words_as_str(overlaping_words))
+        file_logger.info('new words:')
+        file_logger.info(self.format_timestamped_words_as_str(new_words))
 
         # logger.info(f'confirmed_words: {confirmed_words}')
         # logger.info(f'overlaping_words: {overlaping_words}')
@@ -234,7 +253,7 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
         return TranscriptionResult(last_confirmed = ''.join([w.word for w in confirmed_words]),
                                      validating = ''.join([w.word for w in self.validating_words]))
 
-    def process_confirmed_words(self) -> List[Word]:
+    def process_confirmed_words(self) -> List[MutableWord]:
         confirmed_words = []
 
         # logger.info(f'process_confirmed_words -> previous_window: {self.previous_window}')
@@ -255,7 +274,7 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
                     break
         return confirmed_words
 
-    def get_window_words(self, start_sec: int, end_sec: int, aligned_words: Iterable[Word]) -> List[Word]:
+    def get_window_words(self, start_sec: int, end_sec: int, aligned_words: Iterable[MutableWord]) -> List[MutableWord]:
         window_words = []
         for w in aligned_words:
             if w.start >= start_sec:
@@ -269,7 +288,7 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
                     window_words.append(w)
         return window_words
     
-    def process_overlaping_words(self) -> List[Word]:
+    def process_overlaping_words(self) -> List[MutableWord]:
         overlap_words = []
         
         if self.previous_window.end > self.current_window.start:
@@ -300,7 +319,7 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
                     overlap_words = overlap_cur_words 
         return overlap_words
 
-    def process_new_words(self) -> List[Word]:
+    def process_new_words(self) -> List[MutableWord]:
         new_words = []
         
         if len(self.current_window.aligned_words) and self.previous_window.end < self.current_window.end:
@@ -338,6 +357,12 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
             if segment.words:
                 shifted_words.extend([self.shift_word(to_mutable(word), shifted_secs) for word in segment.words])
         return shifted_words
+    
+    def format_timestamped_words_as_str(self, words: List[MutableWord]):
+        printed_str = ''
+        for w in words:
+            printed_str += f'[{w.start:.4f}__{w.word:^7}__{w.end:.4f}] '
+        return printed_str.rstrip()
 
 if __name__ == "__main__":
     my_ring = RingBuffer(160000)
