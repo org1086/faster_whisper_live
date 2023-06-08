@@ -149,6 +149,9 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
 
         new_audio = np.frombuffer(audio, np.int16).flatten().astype(np.float32) / 32768.0
 
+        file_logger.info('==========================================================')
+        file_logger.info(f"new audio size: {len(new_audio)} samples of float type.")
+
         # push to the overridable buffer of the processor
         self.audio_buffer.extend(new_audio)
         self.counter += len(new_audio)
@@ -219,7 +222,6 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
         start = time.time()
 
         # logging previous and current windows with timestamped words for investigation
-        file_logger.info('==========================================================')
         file_logger.info("previous window's timestamped words:")
         file_logger.info(self.format_timestamped_words_as_str(self.previous_window.aligned_words))
         file_logger.info("current window's timestamped words:")
@@ -361,7 +363,7 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
     def format_timestamped_words_as_str(self, words: List[MutableWord]):
         printed_str = ''
         for w in words:
-            printed_str += f'[{w.start:.4f}__{w.word:^7}__{w.end:.4f}] '
+            printed_str += f'[{w.start:.4f} {w.word.strip()} {w.end:.4f}] '
         return printed_str.rstrip()
 
 if __name__ == "__main__":
