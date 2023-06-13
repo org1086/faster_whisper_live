@@ -89,6 +89,9 @@ class LiveWhisperProcessorBase:
     
     def format_timestamped_words_as_str(self, **kwargs):
         raise NotImplemented("must be implemented in the child class")
+    
+    def is_ugly_output(self, **kwargs):
+        raise NotImplemented("must be implemented in the child class")    
 
 
 class LiveWhisperProcessor(LiveWhisperProcessorBase):
@@ -126,6 +129,8 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
 
         self.confirmed_words = []           # array of Word object
         self.validating_words = []          # array of Word object  
+
+        self.WORD_TIME_THRESH = 0.8         # seconds
 
         self.load_model()
     
@@ -190,6 +195,15 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
         logger.info(f'>> actual inference time: {end-start}')
 
         # logger.info(f'segments: {segments}')
+
+        # try to ignore ugly outputs
+        if self.is_ugly_output(segments=segments):
+            logger.info(f'>> the output is ugly, ignore!')
+            file_logger.info(f'">>>>> the output is ugly, ignore!')
+            file_logger.info(f'">>>>> output detail: {[str(segment) for segment in segments]}')
+
+            return TranscriptionResult(last_confirmed = '',
+                                       validating = ''.join([w.word for w in self.validating_words]))
 
         start = time.time()
         aligned_words = self.align_words(segments, self.current_window.start)
@@ -325,7 +339,7 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
                 if prev_words_confidence > cur_words_confidence:
                     # prepend overlap_prev_words to current window aligned words
                     # since there're no words within current overlaping window.
-                    self.current_window.aligned_words = overlap_prev_words + self.current_window.aligned_words
+                    self.current_window.aligned_words = overlap_prev_words + self.current_window.aligned_words[len(overlap_cur_words):]
                     overlap_words = overlap_prev_words
                 else:
                     # nothing to update to current overlaping window, just keep the aligned words as it is.
@@ -379,6 +393,24 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
         for w in words:
             printed_str += f'[{w.start:.2f} {w.word.strip()} ({100*w.probability:.1f}%) {w.end:.2f}] '
         return printed_str.rstrip()
+    
+    def is_ugly_output(self, segments: Iterable[Segment], invalid_timestamp_thresh: float = 0.2):
+        is_ugly = True
+        word_count, invalid_count = 0, 0
+        # two kinds of invalidation
+        # 1. word.start >= word.stop # observation indication
+        # 2. word.stop - word.start > WORD_TIME_THRESH (maximum of 0.8 seconds for a word) 
+        for segment in segments:
+            if not segment.words:
+                continue
+            for w in segment.words:
+                word_count += 1
+                if (w.start >= w.stop) or (w.stop - w.start > self.WORD_TIME_THRESH):
+                    invalid_count += 1
+        if (word_count > 0) and (invalid_count/word_count < invalid_timestamp_thresh):
+            is_ugly = False
+        
+        return is_ugly
 
 if __name__ == "__main__":
     my_ring = RingBuffer(160000)

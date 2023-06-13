@@ -1,2 +1,8 @@
+# Random output signature to filter out
+there are some words [start, end, word, probability] with: word.start == word.end or word.end - word.start < some_threshold (small value)
+=> Example:
+[1.42 Hãy (30.2%) 1.46] [1.46 subscribe (19.0%) 1.46] [1.46 cho (87.5%) 1.46] [1.46 kênh (99.5%) 1.46] [1.46 La (27.2%) 1.46] [1.46 La (87.2%) 1.46] [1.46 School (98.3%) 1.46] [1.46 Để (94.1%) 1.46] [1.46 không (97.0%) 1.48] [1.48 bỏ (98.5%) 1.48] [1.48 lỡ (99.7%) 1.50] [1.50 những (99.0%) 1.50] [1.50 video (93.3%) 1.50] [1.50 hấp (92.2%) 1.50] [1.50 dẫn (99.1%) 1.50]
+
+# Bad random words that need to be filtered out
 Cảm ơn các bạn đã xem video hấp dẫn
 Hãy subscribe cho kênh Ghiền Mì Gõ Để không bỏ lỡ những video hấp dẫn
