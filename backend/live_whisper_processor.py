@@ -398,14 +398,14 @@ class LiveWhisperProcessor(LiveWhisperProcessorBase):
         is_ugly = True
         word_count, invalid_count = 0, 0
         # two kinds of invalidation
-        # 1. word.start >= word.stop # observation indication
-        # 2. word.stop - word.start > WORD_TIME_THRESH (maximum of 0.8 seconds for a word) 
+        # 1. word.start >= word.end # observation indication
+        # 2. word.end - word.start > WORD_TIME_THRESH (maximum of 0.8 seconds for a word) 
         for segment in segments:
             if not segment.words:
                 continue
             for w in segment.words:
                 word_count += 1
-                if (w.start >= w.stop) or (w.stop - w.start > self.WORD_TIME_THRESH):
+                if (w.start >= w.end) or (w.end - w.start > self.WORD_TIME_THRESH):
                     invalid_count += 1
         if (word_count > 0) and (invalid_count/word_count < invalid_timestamp_thresh):
             is_ugly = False
