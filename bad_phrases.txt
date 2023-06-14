@@ -5,4 +5,8 @@ there are some words [start, end, word, probability] with: word.start == word.en
 
 # Bad random words that need to be filtered out
 Cảm ơn các bạn đã xem video hấp dẫn
+Cảm ơn các bạn đã theo dõi, hãy đăng ký kênh để ủng hộ kênh của chúng tôi.
 Hãy subscribe cho kênh Ghiền Mì Gõ Để không bỏ lỡ những video hấp dẫn
+Hãy subscribe cho kênh Ghiền Mì Gõ Để không bỏ lỡ những video mới.
+Hãy đăng ký kênh để ủng hộ kênh của chúng tôi.
+Tạm biệt, tạm biệt mọi người.
