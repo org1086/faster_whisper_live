@@ -1,4 +1,4 @@
-import io from 'socket.io-client';
+import io from "socket.io-client";
 
 const socket = new io.connect("http://178.55.113.73:8271/");
 // const socket = new io.connect("http://localhost:5000/");
@@ -18,24 +18,23 @@ let bufferSize = 2048,
 
 const mediaConstraints = {
   audio: true,
-  video: false
+  video: false,
 };
 
 let count = 1;
 
 let AudioStreamer = {
-
   /**
    * @param {object} transcribeConfig Transcription configuration such as language, encoding, etc.
    * @param {function} onData Callback to run on data each time it's received
    * @param {function} onError Callback to run on an error if one is emitted.
    */
-  initRecording: function (transcribeConfig, onData, onNewJobStarted, onError) {
+  initRecording: function (transcribeConfig, onData, onError) {
     //socket.emit('startGoogleCloudStream', {...transcribeConfig});
-    socket.emit('start');
+    socket.emit("start");
     AudioContext = window.AudioContext || window.webkitAudioContext;
     context = new AudioContext({
-        sampleRate: 16000,
+      sampleRate: 16000,
     });
     processor = context.createScriptProcessor(bufferSize, 1, 1);
     processor.connect(context.destination);
@@ -51,40 +50,39 @@ let AudioStreamer = {
       };
     };
 
-    navigator.mediaDevices.getUserMedia(mediaConstraints)
-      .then(handleSuccess);
+    navigator.mediaDevices.getUserMedia(mediaConstraints).then(handleSuccess);
 
     // Socket event from socket server
     // Speech data response
     if (onData) {
-      socket.on('speechData', (response) => {
-        console.log('speech data received from server!')
+      socket.on("speechData", (response) => {
+        console.log("speech data received from server!");
         onData(response.confirmed, response.validating);
       });
     }
 
-    socket.on('queue_changed', (data) => {
+    socket.on("queue_changed", (data) => {
       console.log(`queue_length=${data.queue_len}, last_sample_size=${data.last_sample_size}`);
-    })
+    });
 
-    socket.on('googleCloudStreamError', (error) => {
+    socket.on("googleCloudStreamError", (error) => {
       if (onError) {
-        onError('error');
+        onError("error");
       }
       closeAll();
     });
 
-    socket.on('endGoogleCloudStream', () => {
+    socket.on("endGoogleCloudStream", () => {
       closeAll();
     });
   },
 
   stopRecording: function () {
-    socket.emit('endGoogleCloudStream');
-    socket.emit('stop');
+    socket.emit("endGoogleCloudStream");
+    socket.emit("stop");
     closeAll();
-  }
-}
+  },
+};
 
 export default AudioStreamer;
 
@@ -97,8 +95,8 @@ export default AudioStreamer;
 function microphoneProcess(e) {
   const left = e.inputBuffer.getChannelData(0);
   const left16 = convertFloat32ToInt16(left);
-  socket.emit('binaryAudioData', {chunk: left16, count});
-  count+=1;
+  socket.emit("binaryAudioData", { chunk: left16, count });
+  count += 1;
 }
 
 /**
@@ -110,9 +108,9 @@ function microphoneProcess(e) {
 function convertFloat32ToInt16(buffer) {
   let len = buffer.length;
   var output = new Int16Array(len);
-  for (var i = 0; i < len; i++){
+  for (var i = 0; i < len; i++) {
     var s = Math.max(-1, Math.min(1, buffer[i]));
-    output[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+    output[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
   }
   return output.buffer;
 }
@@ -135,8 +133,8 @@ function convertFloat32ToInt16(buffer) {
  */
 function closeAll() {
   // Clear the listeners (prevents issue if opening and closing repeatedly)
-  socket.off('speechData');
-  socket.off('googleCloudStreamError');
+  socket.off("speechData");
+  socket.off("googleCloudStreamError");
   let tracks = globalStream ? globalStream.getTracks() : null;
   let track = tracks ? tracks[0] : null;
   if (track) {
@@ -148,7 +146,7 @@ function closeAll() {
       try {
         input.disconnect(processor);
       } catch (error) {
-        console.warn('Attempt to disconnect input failed.')
+        console.warn("Attempt to disconnect input failed.");
       }
     }
     processor.disconnect(context.destination);

@@ -1,1 +1,1 @@
-#Whispering On Air#
+# faster_whisper_live
