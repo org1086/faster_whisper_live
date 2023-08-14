@@ -90,8 +90,8 @@ processor_thread = None
 LANGUAGE = os.getenv('LANGUAGE') if os.getenv('LANGUAGES') else "vi"
 
 # Get environment variables
-WHISPER_MODEL_NAME = os.getenv('WHISPER_MODEL_NAME') if os.getenv('WHISPER_MODEL_NAME') else "tiny"
-DEVICE = os.getenv("DEVICE") if os.getenv("DEVICE") else "cpu"
+WHISPER_MODEL_NAME = os.getenv('WHISPER_MODEL_NAME') if os.getenv('WHISPER_MODEL_NAME') else "medium"
+DEVICE = os.getenv("DEVICE") if os.getenv("DEVICE") else "cuda"
 COMPUTE_TYPE = os.getenv("COMPUTE_TYPE") if os.getenv("COMPUTE_TYPE") else "auto"
 INTERSECTION_THRESH = float(os.getenv("INTERSECTION_THRESH")) if os.getenv("INTERSECTION_THRESH") else 0.6
 
